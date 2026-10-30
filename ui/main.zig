@@ -37,19 +37,20 @@ const Input = struct {
 };
 
 const Unit = struct {
-    inputs: [][:0]u8,
-    output: [:0]u8,
-    mode: c_int,
+    inputs: [][]u8,
+    output: []u8,
+    mode: p2z.bridge.Mode,
 };
 
 const Job = struct {
     units: []Unit,
-    kind: c_int,
-    overwrite: c_int,
+    kind: p2z.bridge.Kind,
+    overwrite: bool,
     done: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
-    code: std.atomic.Value(c_int) = std.atomic.Value(c_int).init(1),
+    /// `p2z.bridge.Outcome` as an integer: std.atomic.Value rejects enums.
+    code: std.atomic.Value(u8) = std.atomic.Value(u8).init(@backingInt(p2z.bridge.Outcome.failed)),
     current_len: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     current: [512]u8 = @splat(0),
     error_buf: [512]u8 = @splat(0),
@@ -339,7 +340,7 @@ fn startConversion() void {
         return;
     }
 
-    const kind: c_int = if (state.extract) 1 else 0;
+    const kind: p2z.bridge.Kind = if (state.extract) .extract else .archive;
     const separate = state.separate and state.inputs.items.len > 1;
 
     var targets: std.ArrayList([]u8) = .empty;
@@ -368,14 +369,14 @@ fn startConversion() void {
         std.Io.Dir.cwd().access(state.io, target, .{}) catch continue;
         existing += 1;
     }
-    var overwrite: c_int = 0;
+    var overwrite = false;
     if (existing > 0) {
         if (!state.pending_overwrite) {
             state.pending_overwrite = true;
             log("{d} output(s) exist. Click Convert again to replace.", .{existing});
             return;
         }
-        overwrite = 1;
+        overwrite = true;
     }
     state.pending_overwrite = false;
 
@@ -391,14 +392,14 @@ fn startConversion() void {
             for (all, 0..) |*slot, n| slot.* = n;
             break :blk all;
         };
-        const inputs = state.gpa.alloc([:0]u8, source_indexes.len) catch return;
+        const inputs = state.gpa.alloc([]u8, source_indexes.len) catch return;
         for (source_indexes, 0..) |src, n| {
-            inputs[n] = dupeZ(state.gpa, state.inputs.items[src].path) catch return;
+            inputs[n] = state.gpa.dupe(u8, state.inputs.items[src].path) catch return;
         }
         units[i] = .{
             .inputs = inputs,
-            .output = dupeZ(state.gpa, target) catch return,
-            .mode = if (separate) 2 else 0,
+            .output = state.gpa.dupe(u8, target) catch return,
+            .mode = if (separate) .single else .auto,
         };
     }
 
@@ -407,42 +408,31 @@ fn startConversion() void {
     log("Starting {s}...", .{if (state.extract) "extract" else if (units[0].inputs.len == 2) "merge" else "convert"});
 }
 
-fn dupeZ(gpa: std.mem.Allocator, text: []const u8) ![:0]u8 {
-    const buf = try gpa.allocSentinel(u8, text.len, 0);
-    @memcpy(buf, text);
-    return buf;
-}
-
 fn worker(job: *Job) void {
-    var code: c_int = 0;
+    var outcome: p2z.bridge.Outcome = .ok;
     for (job.units) |unit| {
-        var pointers: [2][*:0]const u8 = undefined;
-        const n = @min(unit.inputs.len, pointers.len);
-        for (unit.inputs[0..n], 0..) |path, i| pointers[i] = path.ptr;
-        code = p2z.bridge.run(
+        outcome = p2z.bridge.run(
             unit.mode,
             job.kind,
             job.overwrite,
-            unit.output.ptr,
-            &pointers,
-            n,
+            unit.output,
+            unit.inputs,
             progressCallback,
             job,
             &job.error_buf,
-            job.error_buf.len,
         );
-        if (code != 0) break;
+        if (outcome != .ok) break;
     }
-    job.code.store(code, .release);
+    job.code.store(@backingInt(outcome), .release);
     job.running.store(false, .release);
 }
 
-fn progressCallback(ctx: ?*anyopaque, done: u64, total: u64, current: [*]const u8, len: usize) callconv(.c) void {
+fn progressCallback(ctx: ?*anyopaque, progress: p2z.bridge.Progress) void {
     const job: *Job = @ptrCast(@alignCast(ctx.?));
-    job.done.store(done, .release);
-    job.total.store(total, .release);
-    const n = @min(len, job.current.len - 1);
-    @memcpy(job.current[0..n], current[0..n]);
+    job.done.store(progress.done, .release);
+    job.total.store(progress.total, .release);
+    const n = @min(progress.current.len, job.current.len - 1);
+    @memcpy(job.current[0..n], progress.current[0..n]);
     job.current[n] = 0;
     job.current_len.store(n, .release);
 }
@@ -452,13 +442,14 @@ fn pollJob() void {
     if (job.running.load(.acquire)) return;
 
     job.thread.join();
-    const code = job.code.load(.acquire);
-    switch (code) {
-        0 => logOwned(state.gpa.dupe(u8, "Done.") catch return),
-        2 => logOwned(state.gpa.dupe(u8, "Cancelled. No output written.") catch return),
-        else => log("Failed: {s}", .{std.mem.sliceTo(&job.error_buf, 0)}),
+    const outcome: p2z.bridge.Outcome = @fromBackingInt(@intCast(job.code.load(.acquire)));
+    switch (outcome) {
+        .ok, .cancelled => log("{s}", .{std.mem.sliceTo(&job.error_buf, 0)}),
+        .failed => log("Failed: {s}", .{std.mem.sliceTo(&job.error_buf, 0)}),
     }
-    if (job.error_buf[0] != 0 and code == 0) log("{s}", .{std.mem.sliceTo(&job.error_buf, 0)});
+    if (outcome == .ok or outcome == .cancelled) {
+        if (job.error_buf[0] == 0) logOwned(state.gpa.dupe(u8, if (outcome == .ok) "Done." else "Cancelled. No output written.") catch return);
+    }
 
     for (job.units) |unit| {
         for (unit.inputs) |path| state.gpa.free(path);

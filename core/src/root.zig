@@ -22,8 +22,3 @@ pub const probe = @import("probe.zig");
 test {
     std.testing.refAllDecls(@This());
 }
-
-comptime {
-    // Force the C ABI exports to be analyzed when the library is built.
-    _ = bridge;
-}

@@ -20,10 +20,8 @@ file, then `docs/`.
 - New code is Zig, pinned to 0.17.0 (`build.zig.zon` `.minimum_zig_version`, checked by CI).
 - Never write std or build APIs from memory; training data predates 0.17. Read
   `$(zig env | grep std_dir)` first.
-- No C/C++ application files. The UI is `ui/main.zig`; the bridge still exports a C ABI for external callers, but the app itself calls it as a Zig module.
-- The C ABI carries pointers, lengths, integers and status codes only. No allocators, slices,
-  error unions or foreign types cross the boundary.
-- Export with `export fn`; keep the Zig wrapper in `core/src/bridge.zig` in sync in the same change.
+- No C/C++ application files. The UI is `ui/main.zig` and calls the core as a Zig module through
+  `core/src/bridge.zig`; no `export fn` layer, no foreign types at the boundary.
 
 ## 3. Errors must fail loudly
 

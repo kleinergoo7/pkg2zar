@@ -60,7 +60,7 @@ logs a note.
 
 ## Layout
 
-- `core/src/` — Zig core, built as a static library behind a C ABI (`core/src/bridge.zig`)
+- `core/src/` — Zig core, built as a static library (`core/src/root.zig`); the UI calls it through `core/src/bridge.zig`
 - `ui/main.zig` — dvui front end (SDL3 backend); all work runs through `core/src/bridge.zig`
 - `tools/` — pkginfo, listfiles, plan, export, extract
 - `docs/debt.md` — running debt ledger
