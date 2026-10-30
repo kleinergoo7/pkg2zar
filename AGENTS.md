@@ -5,24 +5,24 @@ file, then `docs/`.
 
 ## 1. Build and verify
 
-- Build: `cmake -S . -B build && cmake --build build`. Zig-only: `zig build && zig build test`.
+- Build: `zig build && zig build test`. Everything, including the UI, is one Zig build.
 - Run `zig fmt .` before `zig build` after every Zig change.
 - Decide success from the process exit status, never from grepping compiler output. This machine
   emits German diagnostics (`Fehler:`), so an `error:` grep reports zero matches on a failed build.
 - After a build that can fail, confirm the binary or library changed (mtime or hash). A stale
   artifact reads exactly like a successful build.
 - Do not say "done", "fixed", or "works" without the command and its output. State what was run.
-- Run the C++/CMake build too whenever a change touches the C ABI, the header, or linking.
+- The UI is Zig with dvui; there is no C++ build. If a native C dependency is added, say so in the change.
 
 ## 2. Language and boundaries
 
-- New code is Zig, pinned to 0.17.0 (`build.zig.zon` `.minimum_zig_version`, asserted in CMake).
+- New code is Zig, pinned to 0.17.0 (`build.zig.zon` `.minimum_zig_version`, checked by CI).
 - Never write std or build APIs from memory; training data predates 0.17. Read
   `$(zig env | grep std_dir)` first.
-- C and C++ are debt: Qt shell, `core/src/p2z.h`, and nothing else. Do not add C/C++ files.
+- No C/C++ application files. The UI is `ui/main.zig`; the bridge still exports a C ABI for external callers, but the app itself calls it as a Zig module.
 - The C ABI carries pointers, lengths, integers and status codes only. No allocators, slices,
-  error unions, or C++ types cross the boundary.
-- Export with `export fn`; keep the declaration in `core/src/p2z.h` in sync in the same change.
+  error unions or foreign types cross the boundary.
+- Export with `export fn`; keep the Zig wrapper in `core/src/bridge.zig` in sync in the same change.
 
 ## 3. Errors must fail loudly
 
@@ -81,7 +81,7 @@ Silence is worse than a crash, because it produces a wrong archive that looks va
 - Short functions, early returns, shallow nesting.
 - Comments explain why, citing the spec fact, offset, or bug; never what the line does.
 - No magic numbers; no unrelated churn; match the surrounding code.
-- Keep module boundaries: `pkg.zig` does not know about Qt or the UI; `zar.zig` does not parse pkgs.
+- Keep module boundaries: `pkg.zig` does not know about dvui or the UI; `zar.zig` does not parse pkgs.
 
 ## 8. Git and repository hygiene
 

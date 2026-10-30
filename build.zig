@@ -3,6 +3,8 @@
 
 const std = @import("std");
 
+const tools = [_][]const u8{ "pkginfo", "listfiles", "plan", "export", "extract" };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -22,63 +24,45 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
-    const pkginfo = b.addExecutable(.{
-        .name = "pkginfo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/pkginfo.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "p2z", .module = core }},
-        }),
-    });
-    b.installArtifact(pkginfo);
+    inline for (tools) |name| {
+        const exe = b.addExecutable(.{
+            .name = name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/" ++ name ++ ".zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "p2z", .module = core }},
+            }),
+        });
+        b.installArtifact(exe);
+    }
 
-    const listfiles = b.addExecutable(.{
-        .name = "listfiles",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/listfiles.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "p2z", .module = core }},
-        }),
+    const dvui = b.dependency("dvui", .{
+        .target = target,
+        .optimize = optimize,
+        .backend = .sdl3,
     });
-    b.installArtifact(listfiles);
 
-    const plan_tool = b.addExecutable(.{
-        .name = "plan",
+    const ui = b.addExecutable(.{
+        .name = "ps4-pkg2zar",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/plan.zig"),
+            .root_source_file = b.path("ui/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "p2z", .module = core }},
+            .imports = &.{
+                .{ .name = "dvui", .module = dvui.module("dvui_sdl3") },
+                .{ .name = "p2z", .module = core },
+            },
         }),
     });
-    b.installArtifact(plan_tool);
+    ui.root_module.linkSystemLibrary("zstd", .{});
+    b.installArtifact(ui);
 
-    const export_tool = b.addExecutable(.{
-        .name = "export",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/export.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "p2z", .module = core }},
-        }),
-    });
-    b.installArtifact(export_tool);
-
-    const extract_tool = b.addExecutable(.{
-        .name = "extract",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/extract.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "p2z", .module = core }},
-        }),
-    });
-    b.installArtifact(extract_tool);
+    const run = b.addRunArtifact(ui);
+    run.addPassthruArgs();
+    b.step("run", "Run the application").dependOn(&run.step);
 
     const tests = b.addTest(.{ .root_module = core });
     const run_tests = b.addRunArtifact(tests);
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
+    b.step("test", "Run unit tests").dependOn(&run_tests.step);
 }

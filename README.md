@@ -9,24 +9,19 @@ Split piece sets (`prefix_0.pkg`, `prefix_1.pkg`, ...) are accepted.
 
 ## Build
 
-Requires Zig 0.17.0, CMake 3.21+, Qt 6 Widgets.
-
-```sh
-cmake -S . -B build
-cmake --build build
-./build/ps4-pkg2zar
-```
-
-Zig only:
+Requires Zig 0.17.0. The UI uses [dvui](https://github.com/david-vanderson/dvui) with the SDL3 backend; SDL is built as a Zig dependency, so there is nothing else to install.
 
 ```sh
 zig build
-zig build test
+./zig-out/bin/ps4-pkg2zar
 ```
 
-Zig must be 0.17.0. If another version comes first on `PATH`, either put 0.17 first or point at
-it explicitly: `zig build` with 0.17 on PATH, or for CMake `cmake -S . -B build
--DZIG_EXECUTABLE=/path/to/zig` or `ZIG=/path/to/zig cmake -S . -B build`.
+One command builds the core, the tools and the UI: `zig build`. `zig build run` starts the app,
+`zig build test` runs the unit tests.
+
+Zig only:
+
+Zig must be 0.17.0. If another version comes first on `PATH`, put 0.17 first.
 
 ## Usage
 
@@ -45,8 +40,6 @@ zig-out/bin/plan  base.pkg [update.pkg]     # preflight and merge plan, writes n
 zig-out/bin/listfiles base.pkg [piece...]   # file tree of a pkg or piece set
 zig-out/bin/pkginfo base.pkg                # header fields
 ```
-
-The Qt binary also accepts `ps4-pkg2zar --run out.zar base.pkg [update.pkg]`.
 
 An offscreen UI self-test drives the real widgets:
 
@@ -74,7 +67,7 @@ P2Z_SHADPS4=/path/to/shadps4 tools/boot-test.sh --case merged-zar
 ## Layout
 
 - `core/src/` — Zig core, built as a static library behind a C ABI (`p2z.h`)
-- `ui/` — Qt shell, the only C++ in the project
+- `ui/main.zig` — dvui front end (SDL3 backend); all work runs through `core/src/bridge.zig`
 - `tools/` — pkginfo, listfiles, plan, export
 - `docs/debt.md` — running debt ledger
 

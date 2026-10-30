@@ -5,6 +5,6 @@ A debt item with no exit condition does not belong in this repo.
 
 | Item | Why it exists | Exit condition |
 |---|---|---|
-| `ui/*.cpp` Qt shell | Qt 6 has no stable Zig binding | Fixed budget of about 500 lines; shrink only, never grow |
-| `core/src/p2z.h` | The C ABI has no Zig-native equivalent | Generated from Zig `export fn` signatures once that is stable |
-| libzstd | Zig 0.17 std has no zstd compressor; it is linked for `.zar` output | Zig gains a compressor, or raw-block output becomes acceptable |
+| libzstd | Zig 0.17 std has no zstd compressor | Zig gains a compressor, or raw-block `.zar` output becomes acceptable |
+| `bridge.zig` exports next to Zig wrappers | the C ABI predates the Zig UI; external tools may still call it | delete the `export fn` layer once no external caller exists |
+| dvui + bundled SDL | the UI needs a window, input and native dialogs | a Zig-native windowing layer in std, or the UI disappears |

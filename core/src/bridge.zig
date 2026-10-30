@@ -91,6 +91,27 @@ export fn p2z_cancel() void {
     cancel_flag.store(true, .release);
 }
 
+/// Zig-side entry point for the same flag (the UI is a Zig module, not a C client).
+pub fn cancel() void {
+    cancel_flag.store(true, .release);
+}
+
+/// Zig-side entry point for a job; same code path as the exported C function.
+pub fn run(
+    mode: c_int,
+    kind: c_int,
+    allow_overwrite: c_int,
+    output: [*:0]const u8,
+    inputs: [*]const [*:0]const u8,
+    input_count: usize,
+    callback: ?ProgressFn,
+    ctx: ?*anyopaque,
+    err: [*]u8,
+    err_len: usize,
+) c_int {
+    return p2z_run(mode, kind, allow_overwrite, output, inputs, input_count, callback, ctx, err, err_len);
+}
+
 fn report(_: ?*anyopaque, progress: exporter.Progress) void {
     if (progress_fn) |callback| callback(progress_ctx, progress.done, progress.total, progress.current.ptr, progress.current.len);
 }

@@ -3,7 +3,12 @@
     .name = .p2z,
     .version = "0.0.0",
     .minimum_zig_version = "0.17.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui?ref=main#41896697858695df3936310088d24986ba787267",
+            .hash = "dvui-0.6.0-dev-AQFJmcOVBAHG27zMs-WHKOwoYiXVT-55f71TaOZ4elz1",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
