@@ -33,9 +33,16 @@ jobs:
         run: zig build --release=safe
       - name: Test
         run: zig build test
+      # A downloaded zip must explain itself: binaries alone do not name the licence or the tool.
+      - name: Stage distribution files
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/* dist/
+          cp README.md LICENSE NOTICE dist/
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
           name: ps4-pkg2zar-${{ matrix.os }}
-          path: zig-out/bin/
+          path: dist/
           if-no-files-found: error
