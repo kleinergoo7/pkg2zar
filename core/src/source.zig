@@ -258,6 +258,8 @@ pub const Source = struct {
         const padded_len = (entry.size + 15) & ~@as(usize, 15);
         const cipher = try self.arena.alloc(u8, padded_len);
         @memset(cipher, 0);
+        // Match the reference implementation: only the stored bytes are read, the rest of
+        // the final block stays zero. The unscrambled tail bytes are padding, not content.
         try self.stream.readExact(self.io, entry.offset, cipher[0..entry.size]);
 
         var raw: [32]u8 = undefined;
