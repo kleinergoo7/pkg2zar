@@ -231,7 +231,7 @@ fn logPane() void {
 fn addFilesDialog() void {
     const paths = dvui.dialogNativeFileOpenMultiple(state.gpa, .{
         .title = "Select pkg files",
-        .filters = &.{ "*.pkg" },
+        .filters = &.{"*.pkg"},
         .filter_description = "PS4 packages",
     }) catch null;
     const selected = paths orelse return;
@@ -386,12 +386,11 @@ fn startConversion() void {
     for (targets.items, 0..) |target, i| {
         const source_indexes: []const usize = if (separate)
             &[_]usize{i}
-        else
-            blk: {
-                const all = state.gpa.alloc(usize, state.inputs.items.len) catch return;
-                for (all, 0..) |*slot, n| slot.* = n;
-                break :blk all;
-            };
+        else blk: {
+            const all = state.gpa.alloc(usize, state.inputs.items.len) catch return;
+            for (all, 0..) |*slot, n| slot.* = n;
+            break :blk all;
+        };
         const inputs = state.gpa.alloc([:0]u8, source_indexes.len) catch return;
         for (source_indexes, 0..) |src, n| {
             inputs[n] = dupeZ(state.gpa, state.inputs.items[src].path) catch return;
