@@ -1,0 +1,14 @@
+.{
+    .fingerprint = 0xf6107d111442513c,
+    .name = .p2z,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "core",
+        "LICENSE",
+        "NOTICE",
+    },
+}

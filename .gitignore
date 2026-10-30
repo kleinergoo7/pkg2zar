@@ -1,0 +1,6 @@
+test-rom/
+build/
+zig-out/
+.zig-cache/
+*.zar
+*.zar.part
