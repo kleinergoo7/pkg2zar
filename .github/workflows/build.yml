@@ -27,7 +27,7 @@ jobs:
             libxi-dev libxinerama-dev libxfixes-dev libwayland-dev libxkbcommon-dev \
             libgl1-mesa-dev libasound2-dev libudev-dev pkg-config
       - name: Build
-        run: zig build
+        run: zig build -Doptimize=ReleaseSafe
       - name: Test
         run: zig build test
       - name: Upload binaries
