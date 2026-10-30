@@ -8,6 +8,10 @@
             .url = "git+https://github.com/david-vanderson/dvui?ref=main#41896697858695df3936310088d24986ba787267",
             .hash = "dvui-0.6.0-dev-AQFJmcOVBAHG27zMs-WHKOwoYiXVT-55f71TaOZ4elz1",
         },
+        .zstd = .{
+            .url = "git+https://github.com/allyourcodebase/zstd?ref=1.5.7-2#4ccb01e6fceae86fb9fe36c60b8a103cdc058155",
+            .hash = "zstd-1.5.7-2-KEItkAMwAADNhCbGaImKrjXjnSA51jcqEbGCA3RasVZ9",
+        },
     },
     .paths = .{
         "build.zig",

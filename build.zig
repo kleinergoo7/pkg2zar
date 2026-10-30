@@ -15,7 +15,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    core.linkSystemLibrary("zstd", .{});
+    // zstd comes from a Zig package: Windows and macOS CI have no system libzstd.
+    const zstd = b.dependency("zstd", .{ .target = target, .optimize = optimize });
+    core.linkLibrary(zstd.artifact("zstd"));
 
     const lib = b.addLibrary(.{
         .name = "p2z_core",
@@ -57,7 +59,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    ui.root_module.linkSystemLibrary("zstd", .{});
     b.installArtifact(ui);
 
     const run = b.addRunArtifact(ui);
