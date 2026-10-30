@@ -40,11 +40,10 @@ pub fn build(b: *std.Build) void {
     // SDL3 everywhere except Windows: its SDL package carries ALSA sample files with ':' in
     // their names, which NTFS cannot check out. dvui's DX11 backend avoids that dependency.
     const windows = target.result.os.tag == .windows;
-    const dvui = b.dependency("dvui", .{
-        .target = target,
-        .optimize = optimize,
-        .backend = if (windows) .dx11 else .sdl3,
-    });
+    const dvui = if (windows)
+        b.dependency("dvui", .{ .target = target, .optimize = optimize, .backend = .dx11 })
+    else
+        b.dependency("dvui", .{ .target = target, .optimize = optimize, .backend = .sdl3 });
 
     const ui = b.addExecutable(.{
         .name = "ps4-pkg2zar",
