@@ -56,6 +56,7 @@ pub const Source = struct {
     entries: []pkg.Entry,
     entry_names: []const u8,
     walk: pfs.Walk,
+    keys: unpack.Keys = undefined,
 
     pub fn open(io: std.Io, arena: std.mem.Allocator, paths: []const []const u8) error{OutOfMemory}!Result {
         const files = try arena.alloc(std.Io.File, paths.len);
@@ -129,6 +130,7 @@ pub const Source = struct {
 
         const keys = unpack.derive(stream, file_size, source.header, source.entries) catch |err|
             return .{ .fail = .{ .unpack = err } };
+        source.keys = keys;
 
         const window_len: u64 = @as(u64, source.header.pfs_cache_size) * 2;
         const take: usize = @intCast(@min(window_len, source.header.pfs_image_size));
@@ -148,6 +150,43 @@ pub const Source = struct {
             return .{ .fail = .{ .walk = err } };
 
         return .{ .ok = source };
+    }
+
+    /// One decompressed PFSC block of a file, by block index within that file.
+    /// Returns a slice of `out`, shorter than 0x10000 only for the final block.
+    pub fn readPfsBlock(self: *const Source, block_index: usize, out: *[pfs.block_size]u8) ![]const u8 {
+        const range = self.walk.blockRange(block_index) orelse return error.BlockOutOfRange;
+        if (range.end < range.start) return error.BadSectorMap;
+        const size: usize = @intCast(range.end - range.start);
+        if (size == 0 or size > pfs.block_size) return error.BadSectorMap;
+
+        const rel = self.walk.pfsc_offset + range.start;
+        const aligned = rel & ~@as(u64, 0xFFF);
+        const skip: usize = @intCast(rel - aligned);
+        const span = skip + size;
+        const sectors = (span + 0xFFF) / 0x1000;
+
+        var cipher: [0x11000]u8 = undefined;
+        var plain: [0x11000]u8 = undefined;
+        const want = @as(usize, @intCast(sectors)) * 0x1000;
+        try self.stream.readExact(self.io, self.header.pfs_image_offset + aligned, cipher[0..want]);
+        var s: usize = 0;
+        while (s < want) : (s += 0x1000) {
+            const sector_index = (aligned + s) / 0x1000;
+            crypto.xtsDecrypt(self.keys.data, self.keys.tweak, sector_index, cipher[s..][0..0x1000], plain[s..][0..0x1000]);
+        }
+        const compressed = plain[skip..][0..size];
+        if (size == pfs.block_size) {
+            @memcpy(out, compressed);
+            return out;
+        }
+        var in: std.Io.Reader = .fixed(compressed);
+        var window: [std.compress.flate.max_window_len]u8 = undefined;
+        var decompress: std.compress.flate.Decompress = .init(&in, .zlib, &window);
+        var writer: std.Io.Writer = .fixed(out);
+        _ = decompress.reader.streamRemaining(&writer) catch return error.InflateFailed;
+        if (writer.end == 0) return error.InflateFailed;
+        return out[0..writer.end];
     }
 
     pub fn close(self: Source) void {

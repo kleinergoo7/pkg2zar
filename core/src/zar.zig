@@ -432,24 +432,29 @@ pub const Reader = struct {
     fn walk(self: *Reader, index: usize, parent: []const u8, out: *std.ArrayListUnmanaged(Entry)) !usize {
         const entry = try self.nodeAt(index);
         if (entry.is_file) return index + 1;
+        if (index * 16 + 16 > self.tree.len) return error.BadTree;
+        const first = readU32(self.tree, index * 16 + 4);
         const count = readU32(self.tree, index * 16 + 8);
-        var next = index + 1;
-        for (0..count) |_| {
-            const child = try self.nodeAt(next);
-            const name = try self.nameAt(readU32(self.tree, next * 16) & 0x7FFFFFFF);
+        var visited: usize = 1;
+        for (0..count) |k| {
+            const child_index = first + k;
+            if (child_index * 16 + 16 > self.tree.len) return error.BadTree;
+            const child = try self.nodeAt(child_index);
+            const name = try self.nameAt(readU32(self.tree, child_index * 16) & 0x7FFFFFFF);
             const path = if (parent.len == 0)
                 try self.arena.dupe(u8, name)
             else
                 try std.fmt.allocPrint(self.arena, "{s}/{s}", .{ parent, name });
             if (child.is_file) {
                 try out.append(self.arena, .{ .path = path, .offset = child.offset, .size = child.size, .is_file = true });
-                next += 1;
+                visited += 1;
             } else {
                 try out.append(self.arena, .{ .path = path, .offset = 0, .size = 0, .is_file = false });
-                next = try self.walk(next, path, out);
+                visited += 1;
+                visited += try self.walk(child_index, path, out);
             }
         }
-        return next;
+        return visited;
     }
 
     pub const FileNode = struct { offset: u64, size: u64, is_file: bool };

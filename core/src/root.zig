@@ -18,6 +18,7 @@ pub const zar = @import("zar.zig");
 pub const pieces = @import("pieces.zig");
 pub const source = @import("source.zig");
 pub const plan = @import("plan.zig");
+pub const exporter = @import("export.zig");
 
 test {
     std.testing.refAllDecls(@This());

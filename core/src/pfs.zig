@@ -64,6 +64,14 @@ pub const Walk = struct {
     entries: []Entry,
     inodes: []Inode,
     pfsc_offset: usize,
+    /// Raw sector map: block_count + 1 little-endian u64 offsets relative to the PFSC start.
+    map: []const u8,
+    block_count: usize,
+
+    pub fn blockRange(self: Walk, index: usize) ?struct { start: u64, end: u64 } {
+        if (index >= self.block_count) return null;
+        return .{ .start = readU64(self.map, index * 8), .end = readU64(self.map, (index + 1) * 8) };
+    }
 };
 
 /// `image` is the decrypted PFS image, or the raw image when the pkg stores it unencrypted.
@@ -202,6 +210,8 @@ pub fn walk(arena: std.mem.Allocator, image: []const u8) Error!Walk {
         .entries = try entries.toOwnedSlice(arena),
         .inodes = inodes,
         .pfsc_offset = pfsc_offset,
+        .map = map[0 .. (block_count + 1) * 8],
+        .block_count = block_count,
     };
 }
 
