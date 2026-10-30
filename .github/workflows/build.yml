@@ -9,7 +9,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macOS is off: the hosted arm64 runners were not acquired at all. Re-add
+        # macos-latest here and in release.yml when the capacity problem clears.
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
       # Keep the global cache out of the checkout; setup-zig points both caches at one
