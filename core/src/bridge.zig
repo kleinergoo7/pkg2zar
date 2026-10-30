@@ -7,8 +7,9 @@ const std = @import("std");
 const source = @import("source.zig");
 const plan_mod = @import("plan.zig");
 const exporter = @import("export.zig");
+const pieces = @import("pieces.zig");
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 3;
 
 pub const ProgressFn = *const fn (ctx: ?*anyopaque, done: u64, total: u64) callconv(.c) void;
 
@@ -29,9 +30,19 @@ fn report(_: ?*anyopaque, progress: exporter.Progress) void {
     if (progress_fn) |callback| callback(progress_ctx, progress.done, progress.total);
 }
 
+/// Job mode. AUTO groups a piece set when the names say so, otherwise one input converts and
+/// two inputs merge. MERGE forces base + update. SINGLE treats every input as one piece set.
+pub const Mode = enum(c_int) {
+    auto = 0,
+    merge = 1,
+    single = 2,
+};
+
 /// Runs one convert or merge job. Returns 0 on success, 2 when cancelled, 1 on any error with
 /// a user-facing message in `err`.
 export fn p2z_run(
+    mode: c_int,
+    allow_overwrite: c_int,
     output: [*:0]const u8,
     inputs: [*]const [*:0]const u8,
     input_count: usize,
@@ -52,7 +63,7 @@ export fn p2z_run(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    if (input_count == 0 or input_count > 2) {
+    if (input_count == 0) {
         writeMessage(err, err_len, "select one pkg to convert, or a base and an update to merge");
         return 1;
     }
@@ -63,19 +74,34 @@ export fn p2z_run(
     };
     for (0..input_count) |i| paths[i] = std.mem.span(inputs[i]);
 
+    const requested = std.enums.fromInt(Mode, mode) orelse {
+        writeMessage(err, err_len, "unknown mode");
+        return 1;
+    };
+    const grouped = switch (requested) {
+        .single => true,
+        .merge => false,
+        .auto => pieces.looksLikeSet(paths),
+    };
+    const source_count: usize = if (grouped) 1 else input_count;
+    if (!grouped and input_count > 2) {
+        writeMessage(err, err_len, "select at most two pkgs: a base and an update");
+        return 1;
+    }
+
     var sources: [2]source.Source = undefined;
     var opened: usize = 0;
     defer for (sources[0..opened]) |s| s.close();
 
-    for (paths, 0..) |path, i| {
-        const result = source.Source.open(io, arena, &.{path}) catch {
+    if (grouped) {
+        const result = source.Source.open(io, arena, paths) catch {
             writeMessage(err, err_len, "out of memory");
             return 1;
         };
         switch (result) {
             .ok => |src| {
-                sources[i] = src;
-                opened += 1;
+                sources[0] = src;
+                opened = 1;
             },
             .fail => |fail| {
                 var buf: [512]u8 = undefined;
@@ -84,22 +110,42 @@ export fn p2z_run(
             },
         }
     }
+    if (!grouped) {
+        for (paths, 0..) |path, i| {
+            const result = source.Source.open(io, arena, &.{path}) catch {
+                writeMessage(err, err_len, "out of memory");
+                return 1;
+            };
+            switch (result) {
+                .ok => |src| {
+                    sources[i] = src;
+                    opened += 1;
+                },
+                .fail => |fail| {
+                    var buf: [512]u8 = undefined;
+                    writeMessage(err, err_len, source.describe(fail, &buf));
+                    return 1;
+                },
+            }
+        }
+    }
 
     const base_identity = plan_mod.Identity.fromSource(&sources[0]);
-    const update_identity = if (input_count == 2) plan_mod.Identity.fromSource(&sources[1]) else null;
+    const update_identity = if (source_count == 2) plan_mod.Identity.fromSource(&sources[1]) else null;
     if (plan_mod.preflight(base_identity, update_identity)) |failure| {
         var buf: [512]u8 = undefined;
         writeMessage(err, err_len, plan_mod.describe(failure, &buf));
         return 1;
     }
 
-    const plan = plan_mod.build(arena, sources[0..input_count]) catch {
+    const plan = plan_mod.build(arena, sources[0..source_count]) catch {
         writeMessage(err, err_len, "out of memory");
         return 1;
     };
 
-    const stats = exporter.run(arena, io, sources[0..input_count], &plan, .{
+    const stats = exporter.run(arena, io, sources[0..source_count], &plan, .{
         .output = std.mem.span(output),
+        .overwrite = allow_overwrite != 0,
         .cancel = &cancel_flag,
         .on_progress = report,
     }) catch |failure| switch (failure) {
@@ -145,7 +191,7 @@ test "integration: p2z_run converts through the C ABI" {
     var err: [256]u8 = undefined;
     TestProgress.last_done = 0;
 
-    const code = p2z_run(output_z.ptr, &inputs, 1, TestProgress.cb, null, &err, err.len);
+    const code = p2z_run(@intFromEnum(Mode.single), 0, output_z.ptr, &inputs, 1, TestProgress.cb, null, &err, err.len);
     try std.testing.expectEqual(@as(c_int, 0), code);
     try std.testing.expect(TestProgress.last_done > 0);
     try std.testing.expect(exists(output));

@@ -92,9 +92,10 @@ pub fn preflight(base: Identity, update: ?Identity) ?Failure {
     if (base.pfs_image_count > 1) {
         return .{ .image_count_unsupported = .{ .path = base.path, .count = base.pfs_image_count } };
     }
-    if (pkg.isPatch(base.content_flags)) return .{ .base_is_patch = .{ .path = base.path } };
 
+    // A patch converted on its own is job 2 of the tool, so only a merge rejects it here.
     const upd = update orelse return null;
+    if (pkg.isPatch(base.content_flags)) return .{ .base_is_patch = .{ .path = base.path } };
     if (pkg.isDeltaPatch(upd.content_flags)) return .{ .delta_patch = .{ .path = upd.path } };
     if (upd.content_type != game_content_type) {
         return .{ .content_type_unsupported = .{ .path = upd.path, .value = upd.content_type } };
@@ -221,6 +222,8 @@ test "preflight: accepts the real base and update" {
     const upd = makeIdentity("UP4040-CUSA00740_00-TERRARIA00000001", 0x62300000);
     try std.testing.expect(preflight(base, upd) == null);
     try std.testing.expect(preflight(base, null) == null);
+    // Job 2: an update converted on its own is legal.
+    try std.testing.expect(preflight(upd, null) == null);
 }
 
 test "preflight: refuses a title mismatch and a swapped pair" {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <QApplication>
-#include <QComboBox>
+#include <QCheckBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
@@ -12,6 +12,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QProgressBar>
@@ -59,6 +60,8 @@ private:
     void cancel();
     void poll();
     void log(const QString &line);
+    void logFromWorker(const QString &line);
+    static std::string siblingArchive(const std::string &output, const std::string &input);
     void setBusy(bool busy);
     void updateOutputDefault();
 
@@ -68,6 +71,7 @@ private:
     QPushButton *browseButton_;
     QPushButton *convertButton_;
     QPushButton *cancelButton_;
+    QCheckBox *separateBox_;
     QProgressBar *progress_;
     QPlainTextEdit *log_;
 
@@ -76,6 +80,7 @@ private:
     std::array<char, 512> error_{};
     std::atomic<int> result_{0};
     std::atomic<bool> running_{false};
+    std::atomic<uint64_t> last_percent{255};
     QTimer timer_;
 };
 
@@ -111,6 +116,9 @@ MainWindow::MainWindow() {
     progress_ = new QProgressBar(central);
     progress_->setRange(0, 1000);
     layout->addWidget(progress_);
+
+    separateBox_ = new QCheckBox(QStringLiteral("Convert each input separately (no merge)"), central);
+    layout->addWidget(separateBox_);
 
     auto *actions = new QHBoxLayout();
     convertButton_ = new QPushButton(QStringLiteral("Convert"), central);
@@ -246,29 +254,107 @@ void MainWindow::start() {
         owned.push_back(inputs_->item(i)->text().toStdString());
     }
     const std::string outputUtf8 = output.toStdString();
-    const size_t count = owned.size();
+    const bool separate = separateBox_->isChecked() && owned.size() > 1;
+
+    // Ask before replacing anything; the core renames over the old file only after verify.
+    std::vector<std::string> targets;
+    if (separate) {
+        for (const std::string &input : owned) {
+            targets.push_back(siblingArchive(outputUtf8, input));
+        }
+    } else {
+        targets.push_back(outputUtf8);
+    }
+    bool overwrite = false;
+    size_t existing = 0;
+    for (const std::string &target : targets) {
+        if (QFileInfo::exists(QString::fromStdString(target))) {
+            ++existing;
+        }
+    }
+    if (existing > 0) {
+        const QString text =
+            existing == 1
+                ? QStringLiteral("The output file already exists:\n%1\n\nReplace it?")
+                      .arg(QString::fromStdString(targets.back()))
+                : QStringLiteral("%1 output files already exist. Replace them?").arg(existing);
+        const auto answer = QMessageBox::question(this, QStringLiteral("Replace existing archive"), text,
+                                                  QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
+                                                  QMessageBox::No);
+        if (answer == QMessageBox::Cancel) {
+            return;
+        }
+        if (answer == QMessageBox::No) {
+            log(QStringLiteral("Choose a different output name or folder, then start again."));
+            pickOutput();
+            return;
+        }
+        overwrite = true;
+    }
 
     progressState_.done.store(0);
     progressState_.total.store(0);
     error_.fill(0);
     result_.store(0);
     progress_->setValue(0);
+    last_percent.store(255);
 
     setBusy(true);
     timer_.start();
-    log(QStringLiteral("Starting %1...").arg(count == 2 ? "merge" : "convert"));
+    log(separate ? QStringLiteral("Starting separate conversion of %1 files...").arg(owned.size())
+                 : QStringLiteral("Starting %1...").arg(owned.size() == 2 ? "merge" : "convert"));
 
-    worker_ = std::thread([this, owned, outputUtf8, count] {
-        std::vector<const char *> pointers;
-        pointers.reserve(count);
-        for (const std::string &path : owned) {
-            pointers.push_back(path.c_str());
+    worker_ = std::thread([this, owned, outputUtf8, separate, overwrite] {
+        int code = P2Z_OK;
+        if (separate) {
+            for (const std::string &input : owned) {
+                std::string out = siblingArchive(outputUtf8, input);
+                std::vector<const char *> pointers{input.c_str()};
+                logFromWorker(QStringLiteral("Converting %1 -> %2")
+                                  .arg(QString::fromStdString(input), QString::fromStdString(out)));
+                progressState_.done.store(0);
+                progressState_.total.store(0);
+                code = p2z_run(P2Z_MODE_SINGLE, overwrite ? 1 : 0, out.c_str(), pointers.data(), 1,
+                               progressCallback, &progressState_, error_.data(), error_.size());
+                if (code != P2Z_OK) {
+                    break;
+                }
+            }
+        } else {
+            std::vector<const char *> pointers;
+            pointers.reserve(owned.size());
+            for (const std::string &path : owned) {
+                pointers.push_back(path.c_str());
+            }
+            code = p2z_run(P2Z_MODE_AUTO, overwrite ? 1 : 0, outputUtf8.c_str(), pointers.data(),
+                           owned.size(), progressCallback, &progressState_, error_.data(),
+                           error_.size());
         }
-        const int code = p2z_run(outputUtf8.c_str(), pointers.data(), count, progressCallback,
-                                 &progressState_, error_.data(), error_.size());
         result_.store(code);
         running_.store(false);
     });
+}
+
+/* Writes to the log from the worker thread through a queued call. */
+void MainWindow::logFromWorker(const QString &line) {
+    QMetaObject::invokeMethod(this, [this, line] { log(line); }, Qt::QueuedConnection);
+}
+
+/* Derives `dir/<input base name>.zar` from the chosen output directory. */
+std::string MainWindow::siblingArchive(const std::string &output, const std::string &input) {
+    std::string dir = output;
+    const size_t slash = dir.find_last_of("/\\");
+    dir = slash == std::string::npos ? std::string() : dir.substr(0, slash + 1);
+    std::string name = input;
+    const size_t islash = name.find_last_of("/\\");
+    if (islash != std::string::npos) {
+        name = name.substr(islash + 1);
+    }
+    const size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos) {
+        name = name.substr(0, dot);
+    }
+    return dir + name + ".zar";
 }
 
 void MainWindow::cancel() {
@@ -313,23 +399,62 @@ void MainWindow::log(const QString &line) {
 }
 
 /* Headless path used by the build gate: `ps4-pkg2zar --run out.zar in.pkg [update.pkg]`. */
-static int runHeadless(int argc, char **argv) {
-    const char *output = argv[2];
-    std::vector<const char *> inputs;
+static std::string siblingArchive(const std::string &output, const std::string &input) {
+    std::string dir = output;
+    const size_t slash = dir.find_last_of("/\\");
+    dir = slash == std::string::npos ? std::string() : dir.substr(0, slash + 1);
+    std::string name = input;
+    const size_t islash = name.find_last_of("/\\");
+    if (islash != std::string::npos) {
+        name = name.substr(islash + 1);
+    }
+    const size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos) {
+        name = name.substr(0, dot);
+    }
+    return dir + name + ".zar";
+}
+
+static int runHeadless(bool separate, int argc, char **argv) {
+    const std::string output = argv[2];
+    std::vector<std::string> owned;
     for (int i = 3; i < argc; ++i) {
-        inputs.push_back(argv[i]);
+        owned.emplace_back(argv[i]);
     }
-    char err[512] = {0};
-    const int code = p2z_run(output, inputs.data(), inputs.size(), nullptr, nullptr, err, sizeof(err));
-    if (code != P2Z_OK) {
-        std::fprintf(stderr, "%s\n", err);
+    if (!separate) {
+        std::vector<const char *> pointers;
+        for (const std::string &path : owned) {
+            pointers.push_back(path.c_str());
+        }
+        char err[512] = {0};
+        const int code = p2z_run(P2Z_MODE_AUTO, 0, output.c_str(), pointers.data(), pointers.size(),
+                                 nullptr, nullptr, err, sizeof(err));
+        if (code != P2Z_OK) {
+            std::fprintf(stderr, "%s\n", err);
+        }
+        return code;
     }
-    return code;
+    for (const std::string &input : owned) {
+        const std::string out = siblingArchive(output, input);
+        const char *pointer = input.c_str();
+        char err[512] = {0};
+        const int code = p2z_run(P2Z_MODE_SINGLE, 0, out.c_str(), &pointer, 1, nullptr, nullptr, err,
+                                 sizeof(err));
+        if (code != P2Z_OK) {
+            std::fprintf(stderr, "%s: %s\n", input.c_str(), err);
+            return code;
+        }
+        std::fprintf(stderr, "wrote %s\n", out.c_str());
+    }
+    return P2Z_OK;
 }
 
 int main(int argc, char **argv) {
     if (argc >= 4 && std::strcmp(argv[1], "--run") == 0) {
-        return runHeadless(argc, argv);
+        return runHeadless(false, argc, argv);
+    }
+    if (argc >= 4 && std::strcmp(argv[1], "--run-separate") == 0) {
+        return runHeadless(true, argc, argv);
     }
     QApplication app(argc, argv);
     MainWindow window;

@@ -43,6 +43,9 @@ pub const Callback = *const fn (ctx: ?*anyopaque, progress: Progress) void;
 
 pub const Options = struct {
     output: []const u8,
+    /// When false, an existing output is refused. When true the finished archive replaces it
+    /// atomically after verification, so a failed run leaves the old file intact.
+    overwrite: bool = false,
     cancel: *const std.atomic.Value(bool),
     on_progress: ?Callback = null,
     ctx: ?*anyopaque = null,
@@ -63,7 +66,7 @@ pub fn run(
     plan: *const plan_mod.Plan,
     options: Options,
 ) !Stats {
-    if (fileExists(io, options.output)) return error.OutputExists;
+    if (!options.overwrite and fileExists(io, options.output)) return error.OutputExists;
 
     const part_path = try std.fmt.allocPrint(arena, "{s}.part", .{options.output});
     defer std.Io.Dir.cwd().deleteFile(io, part_path) catch {};

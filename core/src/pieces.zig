@@ -60,6 +60,25 @@ pub const Input = struct {
     size: u64,
 };
 
+/// True when every path parses as `prefix_N.pkg` with the same prefix and the numbers are
+/// distinct. Used to tell a piece set from two unrelated pkgs before opening anything.
+pub fn looksLikeSet(paths: []const []const u8) bool {
+    if (paths.len < 2) return false;
+    var prefix: ?[]const u8 = null;
+    for (paths, 0..) |path, i| {
+        _ = parseNumber(path) orelse return false;
+        const cut = std.mem.lastIndexOfScalar(u8, path, '_') orelse return false;
+        const this_prefix = path[0..cut];
+        if (prefix) |p| {
+            if (!std.mem.eql(u8, p, this_prefix)) return false;
+        } else prefix = this_prefix;
+        for (paths[0..i]) |earlier| {
+            if (parseNumber(earlier) == parseNumber(path)) return false;
+        }
+    }
+    return true;
+}
+
 /// Orders and validates a selected set. Single-file selections are returned as-is without
 /// requiring the naming pattern.
 pub fn order(arena: std.mem.Allocator, inputs: []const Input) !Result {
@@ -161,6 +180,17 @@ test "parseNumber: accepts the scene naming pattern" {
     try std.testing.expectEqual(@as(?u32, null), parseNumber("CUSA00740.pkg"));
     try std.testing.expectEqual(@as(?u32, null), parseNumber("CUSA00740_a.pkg"));
     try std.testing.expectEqual(@as(?u32, null), parseNumber("_12.pkg"));
+}
+
+test "looksLikeSet: separates piece sets from unrelated pkgs" {
+    const set = [_][]const u8{ "GAME_2.pkg", "GAME_0.pkg", "GAME_1.pkg" };
+    try std.testing.expect(looksLikeSet(&set));
+    const unrelated = [_][]const u8{ "base.pkg", "update.pkg" };
+    try std.testing.expect(!looksLikeSet(&unrelated));
+    const dupes = [_][]const u8{ "GAME_0.pkg", "GAME_0.pkg" };
+    try std.testing.expect(!looksLikeSet(&dupes));
+    const one = [_][]const u8{"GAME_0.pkg"};
+    try std.testing.expect(!looksLikeSet(&one));
 }
 
 test "order: accepts a contiguous three-piece set in any input order" {
