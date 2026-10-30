@@ -15,6 +15,7 @@ export fn p2z_abi_version() u32 {
 pub const pfs = @import("pfs.zig");
 pub const unpack = @import("unpack.zig");
 pub const zar = @import("zar.zig");
+pub const pieces = @import("pieces.zig");
 
 test {
     std.testing.refAllDecls(@This());
