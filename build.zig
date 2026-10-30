@@ -44,6 +44,17 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(listfiles);
 
+    const plan_tool = b.addExecutable(.{
+        .name = "plan",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/plan.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "p2z", .module = core }},
+        }),
+    });
+    b.installArtifact(plan_tool);
+
     const tests = b.addTest(.{ .root_module = core });
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");

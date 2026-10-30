@@ -8,6 +8,7 @@
 const std = @import("std");
 const crypto = @import("crypto.zig");
 const pkg = @import("pkg.zig");
+const pieces = @import("pieces.zig");
 
 pub const Error = error{
     MissingEntryKeys,
@@ -38,18 +39,16 @@ pub const Keys = struct {
     tweak: [16]u8,
 };
 
-/// Reads key material at absolute file offsets, checking every range against `file_size`.
+/// Reads key material through the piece-aware stream, checking every range against the size.
 pub fn derive(
-    io: std.Io,
-    file: std.Io.File,
+    stream: pieces.Stream,
     file_size: u64,
     header: pkg.Header,
     entries: []const pkg.Entry,
 ) Error!Keys {
     const read_at = struct {
-        fn call(i: std.Io, f: std.Io.File, offset: u64, buf: []u8) Error!void {
-            const n = f.readPositionalAll(i, buf, offset) catch return error.UnexpectedEndOfFile;
-            if (n != buf.len) return error.UnexpectedEndOfFile;
+        fn call(s: pieces.Stream, offset: u64, buf: []u8) Error!void {
+            s.readExact(s.io, offset, buf) catch return error.UnexpectedEndOfFile;
         }
     }.call;
     const entry_keys = findEntry(entries, pkg.entry_id_entry_keys) orelse return error.MissingEntryKeys;
@@ -57,7 +56,7 @@ pub fn derive(
 
     if (!withinFile(entry_keys.offset, 0x800, file_size)) return error.EntryKeysOutOfRange;
     var keyset: [0x800]u8 = undefined;
-    try read_at(io, file, entry_keys.offset, &keyset);
+    try read_at(stream, entry_keys.offset, &keyset);
 
     // Layout inside entry 0x10: 32-byte seed digest, seven 32-byte digests, seven 256-byte
     // RSA blobs. The pkg derived key 3 is blob 3.
@@ -69,7 +68,7 @@ pub fn derive(
 
     if (!withinFile(image_key.offset, 256, file_size)) return error.ImageKeyOutOfRange;
     var imgkey_cipher: [256]u8 = undefined;
-    try read_at(io, file, image_key.offset, &imgkey_cipher);
+    try read_at(stream, image_key.offset, &imgkey_cipher);
 
     const entry_bytes = entryRawBytes(image_key);
     var hashed: [64]u8 = undefined;
@@ -88,7 +87,7 @@ pub fn derive(
     var seed: [16]u8 = undefined;
     const seed_offset = header.pfs_image_offset + 0x370;
     if (!withinFile(seed_offset, seed.len, file_size)) return error.SeedOutOfRange;
-    try read_at(io, file, seed_offset, &seed);
+    try read_at(stream, seed_offset, &seed);
 
     var input: [20]u8 = undefined;
     std.mem.writeInt(u32, input[0..4], 1, .little);

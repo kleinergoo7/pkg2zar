@@ -1,0 +1,219 @@
+// SPDX-FileCopyrightText: 2026 ps4-pkg2zar contributors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! One pkg opened as a piece set: header, entry table, key material, decrypted PFS prefix,
+//! and the walked file tree. Piece-aware reads make a split pkg look like one stream.
+
+const std = @import("std");
+const pkg = @import("pkg.zig");
+const pfs = @import("pfs.zig");
+const pieces = @import("pieces.zig");
+const unpack = @import("unpack.zig");
+const crypto = @import("crypto.zig");
+
+pub const SceFile = struct {
+    path: []const u8,
+    entry: pkg.Entry,
+};
+
+pub const Fail = union(enum) {
+    piece: pieces.Failure,
+    open_failed: struct { path: []const u8, err: anyerror },
+    header: struct { path: []const u8, reason: pkg.Reason, offset: usize },
+    entry_table: struct { path: []const u8, offset: u64 },
+    unpack: unpack.Error,
+    walk: pfs.Error,
+    truncated_image: struct { path: []const u8 },
+    names_out_of_range: struct { path: []const u8 },
+};
+
+pub const Result = union(enum) {
+    ok: Source,
+    fail: Fail,
+};
+
+pub fn describe(fail: Fail, buf: []u8) []const u8 {
+    return switch (fail) {
+        .piece => |failure| pieces.describe(failure, buf),
+        .open_failed => |f| std.fmt.bufPrint(buf, "{s}: cannot open: {t}", .{ f.path, f.err }) catch "cannot open pkg",
+        .header => |f| std.fmt.bufPrint(buf, "{s}: {s} (at 0x{X})", .{ f.path, pkg.reasonName(f.reason), f.offset }) catch "bad pkg header",
+        .entry_table => |f| std.fmt.bufPrint(buf, "{s}: entry table at 0x{X} is outside the file", .{ f.path, f.offset }) catch "bad entry table",
+        .unpack => |e| unpack.reasonName(e),
+        .walk => |e| pfs.reasonName(e),
+        .truncated_image => |f| std.fmt.bufPrint(buf, "{s}: PFS image is shorter than declared", .{f.path}) catch "truncated image",
+        .names_out_of_range => |f| std.fmt.bufPrint(buf, "{s}: entry name table is outside the file", .{f.path}) catch "bad name table",
+    };
+}
+
+pub const Source = struct {
+    io: std.Io,
+    arena: std.mem.Allocator,
+    paths: []const []const u8,
+    files: []std.Io.File,
+    stream: pieces.Stream,
+    header_bytes: [pkg.header_size]u8,
+    header: pkg.Header,
+    entries: []pkg.Entry,
+    entry_names: []const u8,
+    walk: pfs.Walk,
+
+    pub fn open(io: std.Io, arena: std.mem.Allocator, paths: []const []const u8) error{OutOfMemory}!Result {
+        const files = try arena.alloc(std.Io.File, paths.len);
+        const inputs = try arena.alloc(pieces.Input, paths.len);
+        var opened: usize = 0;
+        errdefer closeAll(files[0..opened], io);
+
+        for (paths, 0..) |path, i| {
+            const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+                return .{ .fail = .{ .open_failed = .{ .path = path, .err = err } } };
+            };
+            files[i] = file;
+            opened += 1;
+            const size = file.length(io) catch |err| {
+                return .{ .fail = .{ .open_failed = .{ .path = path, .err = err } } };
+            };
+            inputs[i] = .{ .path = path, .size = size };
+        }
+
+        const ordered = try pieces.order(arena, inputs);
+        const ordered_pieces = switch (ordered) {
+            .ok => |p| p,
+            .fail => |failure| return .{ .fail = .{ .piece = failure } },
+        };
+        const sizes = try arena.alloc(u64, ordered_pieces.len);
+        for (ordered_pieces, 0..) |piece, i| sizes[i] = piece.size;
+        const stream = pieces.Stream.init(io, files, sizes);
+        const file_size = stream.total;
+        const first = paths[0];
+
+        var source: Source = .{
+            .io = io,
+            .arena = arena,
+            .paths = paths,
+            .files = files,
+            .stream = stream,
+            .header_bytes = undefined,
+            .header = undefined,
+            .entries = undefined,
+            .entry_names = &.{},
+            .walk = undefined,
+        };
+
+        stream.readExact(io, 0, &source.header_bytes) catch
+            return .{ .fail = .{ .truncated_image = .{ .path = first } } };
+        source.header = switch (pkg.parseHeader(&source.header_bytes, file_size)) {
+            .ok => |h| h,
+            .fail => |failure| return .{ .fail = .{ .header = .{ .path = first, .reason = failure.reason, .offset = failure.offset } } },
+        };
+
+        const table_len = @as(u64, source.header.entry_count) * pkg.entry_size;
+        const table_end = std.math.add(u64, source.header.table_offset, table_len) catch file_size + 1;
+        if (table_end > file_size) {
+            return .{ .fail = .{ .entry_table = .{ .path = first, .offset = source.header.table_offset } } };
+        }
+        const table = try arena.alloc(u8, @intCast(table_len));
+        stream.readExact(io, source.header.table_offset, table) catch
+            return .{ .fail = .{ .entry_table = .{ .path = first, .offset = source.header.table_offset } } };
+        source.entries = try arena.alloc(pkg.Entry, source.header.entry_count);
+        pkg.parseEntries(table, 0, source.entries) catch
+            return .{ .fail = .{ .entry_table = .{ .path = first, .offset = source.header.table_offset } } };
+
+        if (findEntry(source.entries, pkg.entry_id_entry_names)) |names_entry| {
+            const end = std.math.add(u64, names_entry.offset, names_entry.size) catch file_size + 1;
+            if (end > file_size) return .{ .fail = .{ .names_out_of_range = .{ .path = first } } };
+            const names = try arena.alloc(u8, names_entry.size);
+            stream.readExact(io, names_entry.offset, names) catch
+                return .{ .fail = .{ .names_out_of_range = .{ .path = first } } };
+            source.entry_names = names;
+        }
+
+        const keys = unpack.derive(stream, file_size, source.header, source.entries) catch |err|
+            return .{ .fail = .{ .unpack = err } };
+
+        const window_len: u64 = @as(u64, source.header.pfs_cache_size) * 2;
+        const take: usize = @intCast(@min(window_len, source.header.pfs_image_size));
+        const encrypted = try arena.alloc(u8, take);
+        stream.readExact(io, source.header.pfs_image_offset, encrypted) catch
+            return .{ .fail = .{ .truncated_image = .{ .path = first } } };
+        const plain = try arena.alloc(u8, take);
+        var sector: u64 = 0;
+        var off: usize = 0;
+        while (off < take) : (off += 0x1000) {
+            const end = @min(off + 0x1000, take);
+            crypto.xtsDecrypt(keys.data, keys.tweak, sector, encrypted[off..end], plain[off..end]);
+            sector += 1;
+        }
+
+        source.walk = pfs.walk(arena, plain) catch |err|
+            return .{ .fail = .{ .walk = err } };
+
+        return .{ .ok = source };
+    }
+
+    pub fn close(self: Source) void {
+        closeAll(self.files, self.io);
+    }
+
+    /// sce_sys files that live in the pkg entry table rather than the PFS image.
+    pub fn sceFiles(self: Source) ![]SceFile {
+        var out: std.ArrayListUnmanaged(SceFile) = .empty;
+        for (self.entries) |entry| {
+            if (entry.filename_offset == 0 or entry.size == 0) continue;
+            const name = self.entryName(entry) orelse continue;
+            const path = try std.fmt.allocPrint(self.arena, "sce_sys/{s}", .{name});
+            try out.append(self.arena, .{ .path = path, .entry = entry });
+        }
+        return out.toOwnedSlice(self.arena);
+    }
+
+    fn entryName(self: Source, entry: pkg.Entry) ?[]const u8 {
+        const offset: usize = entry.filename_offset;
+        if (offset == 0 or offset >= self.entry_names.len) return null;
+        const rest = self.entry_names[offset..];
+        const end = std.mem.indexOfScalar(u8, rest, 0) orelse rest.len;
+        if (end == 0) return null;
+        return rest[0..end];
+    }
+
+    pub fn contentId(self: *const Source) []const u8 {
+        return std.mem.trimEnd(u8, &self.header.content_id, "\x00 ");
+    }
+
+    /// `CUSAxxxxx`, the nine characters after the entitlement prefix and dash.
+    pub fn titleId(self: *const Source) ?[]const u8 {
+        const id = self.contentId();
+        if (id.len < 16 or id[6] != '-') return null;
+        return id[7..16];
+    }
+
+    /// `UP4040`, `EP....`, the part before the dash.
+    pub fn entitlement(self: *const Source) ?[]const u8 {
+        const id = self.contentId();
+        if (id.len < 7 or id[6] != '-') return null;
+        return id[0..6];
+    }
+
+    pub fn fileSize(self: *const Source) u64 {
+        return self.stream.total;
+    }
+};
+
+fn findEntry(entries: []const pkg.Entry, id: u32) ?pkg.Entry {
+    for (entries) |entry| {
+        if (entry.id == id) return entry;
+    }
+    return null;
+}
+
+fn closeAll(files: []std.Io.File, io: std.Io) void {
+    for (files) |file| file.close(io);
+}
+
+test "contentId, titleId and entitlement parse the sample layout" {
+    var source: Source = undefined;
+    @memset(&source.header.content_id, 0);
+    @memcpy(source.header.content_id[0..36], "UP4040-CUSA00740_00-TERRARIA00000001");
+    try std.testing.expectEqualStrings("UP4040-CUSA00740_00-TERRARIA00000001", (&source).contentId());
+    try std.testing.expectEqualStrings("CUSA00740", (&source).titleId().?);
+    try std.testing.expectEqualStrings("UP4040", (&source).entitlement().?);
+}

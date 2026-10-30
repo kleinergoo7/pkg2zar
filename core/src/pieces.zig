@@ -114,14 +114,15 @@ pub fn validateSizes(pieces: []const Piece, declared: u64) ?Failure {
 
 /// Virtual byte range over an ordered piece set. Offsets are absolute across all pieces.
 pub const Stream = struct {
+    io: std.Io,
     files: []const std.Io.File,
     sizes: []const u64,
     total: u64,
 
-    pub fn init(files: []const std.Io.File, sizes: []const u64) Stream {
+    pub fn init(io: std.Io, files: []const std.Io.File, sizes: []const u64) Stream {
         var total: u64 = 0;
         for (sizes) |size| total += size;
-        return .{ .files = files, .sizes = sizes, .total = total };
+        return .{ .io = io, .files = files, .sizes = sizes, .total = total };
     }
 
     /// Reads up to `buf.len` bytes at `offset`. Returns 0 at end of stream.
@@ -288,7 +289,7 @@ test "stream: reads across piece boundaries" {
     }
     defer for (files) |f| f.close(io);
 
-    const stream = Stream.init(&files, &sizes);
+    const stream = Stream.init(io, &files, &sizes);
     var buf: [4]u8 = undefined;
     try stream.readExact(io, 3, &buf);
     try std.testing.expectEqualStrings("deFG", &buf);
@@ -335,7 +336,7 @@ test "integration: real header survives a three-piece split" {
     try std.testing.expectEqual(@as(usize, 3), pieces.len);
     try std.testing.expect(validateSizes(pieces, 0x1000) == null);
 
-    const stream = Stream.init(&files, &sizes);
+    const stream = Stream.init(io, &files, &sizes);
     var rebuilt: [0x1000]u8 = undefined;
     try stream.readExact(io, 0, &rebuilt);
     try std.testing.expectEqualSlices(u8, &header, &rebuilt);

@@ -16,6 +16,8 @@ pub const pfs = @import("pfs.zig");
 pub const unpack = @import("unpack.zig");
 pub const zar = @import("zar.zig");
 pub const pieces = @import("pieces.zig");
+pub const source = @import("source.zig");
+pub const plan = @import("plan.zig");
 
 test {
     std.testing.refAllDecls(@This());
