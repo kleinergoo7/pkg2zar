@@ -507,6 +507,25 @@ pub const Reader = struct {
         }
     }
 
+    /// Writes `entry.size` bytes to `file` one block at a time, so extracting a game archive
+    /// never needs a buffer of the file's size.
+    pub fn copyFile(self: *Reader, entry: Entry, file: std.Io.File) !void {
+        if (!entry.is_file) return error.NotAFile;
+        var remaining: usize = @intCast(entry.size);
+        var block_index: usize = @intCast(entry.offset / block_size);
+        const skip: usize = @intCast(entry.offset % block_size);
+        var block_buf: [block_size]u8 = undefined;
+        var first = true;
+        while (remaining > 0) : (block_index += 1) {
+            try self.readBlock(block_index, &block_buf);
+            const start: usize = if (first) skip else 0;
+            first = false;
+            const take = @min(remaining, block_size - start);
+            try file.writeStreamingAll(self.io, block_buf[start..][0..take]);
+            remaining -= take;
+        }
+    }
+
     fn readBlock(self: *Reader, index: usize, out: *[block_size]u8) !void {
         const record_index = index / entries_per_record;
         const sub = index % entries_per_record;
@@ -604,4 +623,46 @@ test "zar writer round-trips files and directories" {
     try reader.readFile(exe, big);
     const thousand: [1000]u8 = @splat('x');
     try std.testing.expectEqualSlices(u8, &thousand, big);
+}
+
+test "zar copyFile writes the entry block by block" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const path = ".zig-cache/zar-copyfile-test.zar";
+    const copy_path = ".zig-cache/zar-copyfile-test.bin";
+
+    // Two blocks' worth plus a tail, so the loop takes more than one path through the records.
+    const size = block_size + 7;
+    const payload = try arena.alloc(u8, size);
+    for (payload, 0..) |*byte, i| byte.* = @truncate(i * 31 + 7);
+
+    const created = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true, .truncate = true });
+    {
+        var writer = try Writer.init(io, created, arena);
+        defer writer.nodes.deinit(arena);
+        try writer.startFile("data.bin");
+        try writer.appendData(payload);
+        try writer.finalize();
+    }
+    created.close(io);
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, copy_path) catch {};
+
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var reader = try Reader.open(io, file, arena);
+    const listing = try reader.entries();
+    const entry = for (listing) |item| {
+        if (item.is_file) break item;
+    } else return error.MissingEntry;
+    try std.testing.expectEqual(@as(u64, size), entry.size);
+
+    const copy = try std.Io.Dir.cwd().createFile(io, copy_path, .{ .truncate = true });
+    try reader.copyFile(entry, copy);
+    copy.close(io);
+
+    const written = try std.Io.Dir.cwd().readFileAlloc(io, copy_path, arena, .unlimited);
+    try std.testing.expectEqualSlices(u8, payload, written);
 }

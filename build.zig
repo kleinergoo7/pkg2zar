@@ -3,7 +3,7 @@
 
 const std = @import("std");
 
-const tools = [_][]const u8{ "pkginfo", "listfiles", "plan", "export", "extract" };
+const tools = [_][]const u8{ "pkginfo", "listfiles", "plan", "export", "extract", "zar" };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
