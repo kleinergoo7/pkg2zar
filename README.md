@@ -9,7 +9,7 @@ Split piece sets (`prefix_0.pkg`, `prefix_1.pkg`, ...) are accepted.
 
 ## Build
 
-Requires Zig 0.16.0, CMake 3.21+, Qt 6 Widgets.
+Requires Zig 0.17.0, CMake 3.21+, Qt 6 Widgets.
 
 ```sh
 cmake -S . -B build
@@ -24,8 +24,8 @@ zig build
 zig build test
 ```
 
-Zig must be 0.16.0. If another version comes first on `PATH`, either put 0.16 first or point at
-it explicitly: `zig build` with 0.16 on PATH, or for CMake `cmake -S . -B build
+Zig must be 0.17.0. If another version comes first on `PATH`, either put 0.17 first or point at
+it explicitly: `zig build` with 0.17 on PATH, or for CMake `cmake -S . -B build
 -DZIG_EXECUTABLE=/path/to/zig` or `ZIG=/path/to/zig cmake -S . -B build`.
 
 ## Usage

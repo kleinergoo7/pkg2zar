@@ -287,16 +287,18 @@ test "integration: p2z_run converts through the C ABI" {
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, output) catch {};
     std.Io.Dir.cwd().deleteFile(std.testing.io, output ++ ".part") catch {};
 
-    const output_z = try std.testing.allocator.dupeZ(u8, output);
+    const output_z = try std.testing.allocator.allocSentinel(u8, output.len, 0);
+    @memcpy(output_z, output);
     defer std.testing.allocator.free(output_z);
-    const input_z = try std.testing.allocator.dupeZ(u8, path);
+    const input_z = try std.testing.allocator.allocSentinel(u8, path.len, 0);
+    @memcpy(input_z, path);
     defer std.testing.allocator.free(input_z);
     const inputs = [_][*:0]const u8{input_z.ptr};
 
     var err: [256]u8 = undefined;
     TestProgress.last_done = 0;
 
-    const code = p2z_run(@intFromEnum(Mode.single), @intFromEnum(Kind.archive), 0, output_z.ptr, &inputs, 1, TestProgress.cb, null, &err, err.len);
+    const code = p2z_run(@backingInt(Mode.single), @backingInt(Kind.archive), 0, output_z.ptr, &inputs, 1, TestProgress.cb, null, &err, err.len);
     try std.testing.expectEqual(@as(c_int, 0), code);
     try std.testing.expect(TestProgress.last_done > 0);
     try std.testing.expect(exists(output));
@@ -323,17 +325,20 @@ test "integration: merge accepts the update listed first" {
     std.Io.Dir.cwd().deleteFile(std.testing.io, output) catch {};
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, output) catch {};
 
-    const output_z = try std.testing.allocator.dupeZ(u8, output);
+    const output_z = try std.testing.allocator.allocSentinel(u8, output.len, 0);
+    @memcpy(output_z, output);
     defer std.testing.allocator.free(output_z);
-    const update_z = try std.testing.allocator.dupeZ(u8, update_path);
+    const update_z = try std.testing.allocator.allocSentinel(u8, update_path.len, 0);
+    @memcpy(update_z, update_path);
     defer std.testing.allocator.free(update_z);
-    const base_z = try std.testing.allocator.dupeZ(u8, base_path);
+    const base_z = try std.testing.allocator.allocSentinel(u8, base_path.len, 0);
+    @memcpy(base_z, base_path);
     defer std.testing.allocator.free(base_z);
 
     // Update first on purpose: the roles must be detected, not taken from the order.
     const inputs = [_][*:0]const u8{ update_z.ptr, base_z.ptr };
-    var err: [256]u8 = [_]u8{0} ** 256;
-    const code = p2z_run(@intFromEnum(Mode.auto), @intFromEnum(Kind.archive), 0, output_z.ptr, &inputs, 2, null, null, &err, err.len);
+    var err: [256]u8 = @splat(0);
+    const code = p2z_run(@backingInt(Mode.auto), @backingInt(Kind.archive), 0, output_z.ptr, &inputs, 2, null, null, &err, err.len);
     try std.testing.expectEqual(@as(c_int, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, &err, "swapped") != null);
     try std.testing.expect(exists(output));
