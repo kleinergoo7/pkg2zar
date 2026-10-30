@@ -1,0 +1,5 @@
+# Zig sources must check out with LF: `zig fmt --check` rejects CRLF, and the
+# Windows runner's git converts text files to CRLF unless told otherwise.
+* text=auto eol=lf
+*.pkg binary
+*.zar binary
