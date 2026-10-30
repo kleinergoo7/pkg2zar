@@ -37,10 +37,13 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(exe);
     }
 
+    // SDL3 everywhere except Windows: its SDL package carries ALSA sample files with ':' in
+    // their names, which NTFS cannot check out. dvui's DX11 backend avoids that dependency.
+    const windows = target.result.os.tag == .windows;
     const dvui = b.dependency("dvui", .{
         .target = target,
         .optimize = optimize,
-        .backend = .sdl3,
+        .backend = if (windows) .dx11 else .sdl3,
     });
 
     const ui = b.addExecutable(.{
@@ -50,7 +53,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "dvui", .module = dvui.module("dvui_sdl3") },
+                .{ .name = "dvui", .module = dvui.module(if (windows) "dvui_dx11" else "dvui_sdl3") },
                 .{ .name = "p2z", .module = core },
             },
         }),

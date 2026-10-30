@@ -16,6 +16,9 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+      - name: Separate Zig caches
+        shell: bash
+        run: echo "ZIG_GLOBAL_CACHE_DIR=$RUNNER_TEMP/zig-global" >> "$GITHUB_ENV"
       - name: Linux windowing headers for SDL
         if: runner.os == 'Linux'
         run: |
