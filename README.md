@@ -40,6 +40,15 @@ zig-out/bin/pkginfo base.pkg                # header fields
 
 The Qt binary also accepts `ps4-pkg2zar --run out.zar base.pkg [update.pkg]`.
 
+An offscreen UI self-test drives the real widgets:
+
+```sh
+QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest convert out.zar base.pkg
+QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest cancel  out.zar base.pkg update.pkg
+```
+
+Modes: `convert`, `merge`, `cancel`, `separate`. It exits 0 on pass and prints the log on failure.
+
 ## Layout
 
 - `core/src/` — Zig core, built as a static library behind a C ABI (`p2z.h`)

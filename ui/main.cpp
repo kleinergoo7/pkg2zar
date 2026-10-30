@@ -17,6 +17,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -55,6 +56,15 @@ static void progressCallback(void *ctx, uint64_t done, uint64_t total, const cha
 class MainWindow : public QMainWindow {
 public:
     MainWindow();
+
+    /* Hooks for the offscreen UI self-test. They drive the same widgets a user clicks. */
+    void testSetInputs(const QStringList &paths) { addInputs(paths); }
+    void testSetOutput(const QString &path) { output_->setText(path); }
+    void testSetSeparate(bool on) { separateBox_->setChecked(on); }
+    void testClickConvert() { convertButton_->click(); }
+    void testClickCancel() { cancelButton_->click(); }
+    bool testBusy() const { return running_.load(); }
+    QString testLog() const { return log_->toPlainText(); }
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -471,7 +481,106 @@ static int runHeadless(bool separate, int argc, char **argv) {
     return P2Z_OK;
 }
 
+/* Offscreen self-test: drives the real widgets, then checks the log and the files.
+ * Usage: --ui-selftest <convert|merge|cancel|separate> <out.zar> <in.pkg> [in2.pkg] */
+static int runUiSelfTest(int argc, char **argv) {
+    if (argc < 5) {
+        std::fprintf(stderr, "usage: --ui-selftest <convert|merge|cancel|separate> <out> <in...>\n");
+        return 2;
+    }
+    const std::string mode = argv[2];
+    const QString output = QString::fromLocal8Bit(argv[3]);
+    QStringList inputs;
+    for (int i = 4; i < argc; ++i) {
+        inputs << QString::fromLocal8Bit(argv[i]);
+    }
+
+    const QString part = output + QStringLiteral(".part");
+    QFile::remove(output);
+    QFile::remove(part);
+
+    MainWindow window;
+    window.show();
+    window.testSetInputs(inputs);
+    window.testSetOutput(output);
+    window.testSetSeparate(mode == "separate");
+
+    QElapsedTimer clock;
+    clock.start();
+    bool cancelSent = false;
+    int failures = 0;
+
+    auto finish = [&](const QString &reason) {
+        const QString log = window.testLog();
+        bool ok = true;
+        auto require = [&](bool condition, const QString &what) {
+            if (!condition) {
+                ok = false;
+                std::fprintf(stderr, "UI SELFTEST FAIL: %s\n", qPrintable(what));
+            }
+        };
+        if (mode == "cancel") {
+            require(log.contains(QStringLiteral("Cancelled")), QStringLiteral("log has no Cancelled line"));
+            require(!QFileInfo::exists(output), QStringLiteral("archive exists after cancel"));
+            require(!QFileInfo::exists(part), QStringLiteral(".part exists after cancel"));
+        } else if (mode == "separate") {
+            require(window.testLog().contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
+            for (const QString &input : inputs) {
+                const QString derived =
+                    QString::fromStdString(siblingArchive(output.toStdString(), input.toStdString()));
+                require(QFileInfo::exists(derived), QStringLiteral("derived archive missing: ") + derived);
+            }
+        } else {
+            require(log.contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
+            require(QFileInfo::exists(output), QStringLiteral("archive missing"));
+            require(!QFileInfo::exists(part), QStringLiteral(".part left behind"));
+        }
+        if (failures > 0) {
+            ok = false;
+        }
+        std::fprintf(stderr, "UI SELFTEST %s: %s\n", ok ? "PASS" : "FAIL", qPrintable(reason));
+        if (!ok) {
+            std::fprintf(stderr, "log:\n%s\n", qPrintable(log));
+            QCoreApplication::exit(1);
+        } else {
+            QCoreApplication::exit(0);
+        }
+    };
+
+    QTimer poll;
+    poll.setInterval(100);
+    QObject::connect(&poll, &QTimer::timeout, [&] {
+        if (window.testBusy()) {
+            if (mode == "cancel" && !cancelSent && clock.elapsed() > 800) {
+                window.testClickCancel();
+                cancelSent = true;
+            }
+            if (clock.elapsed() > 180000) {
+                finish(QStringLiteral("timeout"));
+            }
+            return;
+        }
+        poll.stop();
+        finish(QStringLiteral("finished"));
+    });
+
+    QTimer::singleShot(150, [&] {
+        window.testClickConvert();
+        if (!window.testBusy()) {
+            finish(QStringLiteral("job did not start"));
+            return;
+        }
+        poll.start();
+    });
+
+    return QApplication::exec();
+}
+
 int main(int argc, char **argv) {
+    if (argc >= 5 && std::strcmp(argv[1], "--ui-selftest") == 0) {
+        QApplication app(argc, argv);
+        return runUiSelfTest(argc, argv);
+    }
     if (argc >= 4 && std::strcmp(argv[1], "--run") == 0) {
         return runHeadless(false, argc, argv);
     }
