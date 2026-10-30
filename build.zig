@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 const std = @import("std");
+const zon = @import("build.zig.zon");
 
 const tools = [_][]const u8{ "pkginfo", "listfiles", "plan", "export", "extract", "zar" };
 
@@ -47,6 +48,9 @@ pub fn build(b: *std.Build) void {
     else
         b.dependency("dvui", .{ .target = target, .optimize = optimize, .backend = .sdl3 });
 
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", zon.version);
+
     const ui = b.addExecutable(.{
         .name = "ps4-pkg2zar",
         .root_module = b.createModule(.{
@@ -56,6 +60,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "dvui", .module = dvui.module(if (windows) "dvui_dx11" else "dvui_sdl3") },
                 .{ .name = "p2z", .module = core },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });

@@ -7,13 +7,14 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const p2z = @import("p2z");
+const build_options = @import("build_options");
 
 pub const dvui_app: dvui.App = .{
     .config = .{
         .options = .{
             .size = .{ .w = 820.0, .h = 640.0 },
             .min_size = .{ .w = 620.0, .h = 480.0 },
-            .title = "ps4-pkg2zar",
+            .title = "ps4-pkg2zar " ++ build_options.version,
             .app = "ps4-pkg2zar",
             .org = "ps4-pkg2zar",
         },
