@@ -20,12 +20,13 @@ cmake --build build
 Zig only:
 
 ```sh
-/usr/bin/zig build
-/usr/bin/zig build test
+zig build
+zig build test
 ```
 
-Zig must be 0.16.0. Use the full path when another Zig (for example a Homebrew 0.17)
-comes first on `PATH`; the CMake build already prefers `/usr/bin/zig`.
+Zig must be 0.16.0. If another version comes first on `PATH`, either put 0.16 first or point at
+it explicitly: `zig build` with 0.16 on PATH, or for CMake `cmake -S . -B build
+-DZIG_EXECUTABLE=/path/to/zig` or `ZIG=/path/to/zig cmake -S . -B build`.
 
 ## Usage
 

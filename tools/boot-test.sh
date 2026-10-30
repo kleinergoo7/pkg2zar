@@ -8,10 +8,10 @@
 #   P2Z_TEST_PKG=base.pkg P2Z_TEST_UPDATE=update.pkg tools/boot-test.sh [--case NAME] [--keep]
 #
 # Environment:
-#   P2Z_SHADPS4      emulator binary or AppRun (default /tmp/opencode/shadps4/squashfs-root/AppRun)
+#   P2Z_SHADPS4      emulator binary or AppRun (required)
 #   P2Z_TEST_PKG     base pkg
 #   P2Z_TEST_UPDATE  update pkg (needed for the merge cases)
-#   P2Z_BOOT_ROOT    work dir (default /tmp/opencode/p2z-boot)
+#   P2Z_BOOT_ROOT    work dir (default: a fresh directory under $TMPDIR)
 #
 # Pass criteria per case:
 #   1. log has "Game id: <title id>"
@@ -24,8 +24,8 @@
 
 set -u -o pipefail
 
-ROOT="${P2Z_BOOT_ROOT:-/tmp/opencode/p2z-boot}"
-SHADPS4="${P2Z_SHADPS4:-/tmp/opencode/shadps4/squashfs-root/AppRun}"
+ROOT="${P2Z_BOOT_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/p2z-boot.XXXXXX")}"
+SHADPS4="${P2Z_SHADPS4:-}"
 BASE="${P2Z_TEST_PKG:-}"
 UPDATE="${P2Z_TEST_UPDATE:-}"
 KEEP=0
@@ -44,8 +44,12 @@ if [[ -z "$BASE" ]]; then
     echo "P2Z_TEST_PKG is not set (path to a base pkg)" >&2
     exit 2
 fi
+if [[ -z "$SHADPS4" ]]; then
+    echo "set P2Z_SHADPS4 to the shadPS4 binary or AppRun" >&2
+    exit 2
+fi
 if [[ ! -x "$SHADPS4" ]]; then
-    echo "shadPS4 not found at $SHADPS4 (set P2Z_SHADPS4)" >&2
+    echo "shadPS4 is not executable: $SHADPS4" >&2
     exit 2
 fi
 for tool in spectacle identify; do
