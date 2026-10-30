@@ -3,8 +3,9 @@
 Converts PS4 `.pkg` files into shadPS4 `.zar` archives, and optionally merges a base game with its
 update into one archive.
 
-Status: skeleton. The core currently exposes only its ABI version. No pkg parsing, merge, or
-archive writing exists yet.
+Status: converts and merges real pkgs end to end, verified against the reference ZArchive
+reader. Single pkg → `.zar`, base + update → one `.zar` with the update winning conflicts.
+Split piece sets (`prefix_0.pkg`, `prefix_1.pkg`, ...) are accepted.
 
 ## Build
 
@@ -23,10 +24,27 @@ zig build
 zig build test
 ```
 
+## Usage
+
+GUI: drop one pkg (convert) or two (merge, base then update), pick the output, press Convert.
+Cancel leaves no file behind.
+
+Headless, same code path as the GUI button:
+
+```sh
+zig-out/bin/export out.zar base.pkg [update.pkg]
+zig-out/bin/plan  base.pkg [update.pkg]     # preflight and merge plan, writes nothing
+zig-out/bin/listfiles base.pkg [piece...]   # file tree of a pkg or piece set
+zig-out/bin/pkginfo base.pkg                # header fields
+```
+
+The Qt binary also accepts `ps4-pkg2zar --run out.zar base.pkg [update.pkg]`.
+
 ## Layout
 
 - `core/src/` — Zig core, built as a static library behind a C ABI (`p2z.h`)
 - `ui/` — Qt shell, the only C++ in the project
+- `tools/` — pkginfo, listfiles, plan, export
 - `docs/debt.md` — running debt ledger
 
 ## Notes
