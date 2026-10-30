@@ -20,6 +20,17 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    const pkginfo = b.addExecutable(.{
+        .name = "pkginfo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/pkginfo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "p2z", .module = core }},
+        }),
+    });
+    b.installArtifact(pkginfo);
+
     const tests = b.addTest(.{ .root_module = core });
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");

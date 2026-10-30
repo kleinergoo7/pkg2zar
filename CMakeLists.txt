@@ -35,6 +35,7 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/build.zig"
     "${CMAKE_SOURCE_DIR}/build.zig.zon"
     "${CMAKE_SOURCE_DIR}/core/src/root.zig"
+    "${CMAKE_SOURCE_DIR}/core/src/pkg.zig"
   COMMENT "Building p2z_core with Zig"
   VERBATIM
 )
