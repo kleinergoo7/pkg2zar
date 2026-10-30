@@ -14,7 +14,7 @@ jobs:
     env:
       # Keep the global cache out of the checkout; setup-zig points both caches at one
       # directory otherwise, which made cache writes fail.
-      ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/../zig-global
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
