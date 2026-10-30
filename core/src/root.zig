@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ps4-pkg2zar contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+const std = @import("std");
+
 pub const pkg = @import("pkg.zig");
 pub const crypto = @import("crypto.zig");
 
@@ -12,3 +14,8 @@ export fn p2z_abi_version() u32 {
 }
 pub const pfs = @import("pfs.zig");
 pub const unpack = @import("unpack.zig");
+pub const zar = @import("zar.zig");
+
+test {
+    std.testing.refAllDecls(@This());
+}

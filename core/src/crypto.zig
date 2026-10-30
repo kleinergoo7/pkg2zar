@@ -146,24 +146,24 @@ test "rsa pkcs1 v1.5 decrypt recovers the pkg derived key 3 blob" {
     // reference implementation; a wrong key or padding path fails here.
     const cipher_hex = "524cd216e2314f7debab237f412ad3c172eda52d1fde9b42fe64ac363a3e3e73e27fd8b5814aab350a63708b6744796bba089e49d426d82f7e52ee173d20aaa61d1a216aa9939b7131d700e42a2f36ab86a9b3b8438c65b02a39c06b09d0c823f4fe07400833fcb6b3ebad8e24b2847d6803ff5cec45ea4f019c4f3bc8b7a663da45cd7f73063fc5af5f710c5d7ff584ed66cd5d8c703a9d5fa259322f936a4d8c873037ef15025ede22defaa426653734b1e9eabcc585596b5c4d3313c1b9a57475912ccd2e4b9b9da4943684be241537137cd318fb76478bccb351ce5a06b4e5949507b2f5ae8128332e2f469b4f86dd4f00d8e46efcf6ca06a611e450194b";
     var cipher: [rsa_bytes]u8 = undefined;
-    try std.fmt.hexToBytes(&cipher, cipher_hex);
+    _ = try std.fmt.hexToBytes(&cipher, cipher_hex);
 
     var out: [32]u8 = undefined;
     const msg = try rsaPkcs1v15Decrypt(pkg_key_set, &cipher, &out);
     var expected: [32]u8 = undefined;
-    try std.fmt.hexToBytes(&expected, "9c807e006677e0e2ebc5aa9c14dede945a225c35a17ccda7137422b40de9a662");
+    _ = try std.fmt.hexToBytes(&expected, "9c807e006677e0e2ebc5aa9c14dede945a225c35a17ccda7137422b40de9a662");
     try std.testing.expectEqualSlices(u8, &expected, msg);
 }
 
 test "rsa pkcs1 v1.5 decrypt recovers ekpfs with the fake keyset" {
-    const cipher_hex = "7160ff9e4b2156a672914dd32a38608befe9ffed4b9da100b6d1275df3172d0fae5ff11039801f6e8dfdd03340bc04ab52d7e0a72e6b28ca1f3c898330cc561ff5f7bb7f18c38dfcba16e2b49c0f1bec82152e10cc8bac55badbfdee9dda0cddb63532cbfe66f7e71e76533ebdf4144cdf00f4e0a1284fc0a6ec20cc0a9f147f55feaba9e5fe3abd1fb88329ff62a1edd3109776cf9e9f311bd222d44c9ace1d514e71d25c5f00b31a05741244d2e254982e82b631805f1f98a464329de71ab04ac69399d876c6149a5fc8908f23108273b25fb5573a8f760e887efae9f99530b8155391a317931aa8b104d9dc1d00e12f35e6ecd6128c1e699b1bcebdeed4af";
+    const cipher_hex = "08564d1dc57eaf1ebb48c22a107aca1b2a0336996e01efe9f4bdfebc0763e83f1ded31c401ed5c53aeef9de184d259f444388cbeb72857fe2f5979973696f1614407c74f55ccf38dc97b1a9f5791ae26367625b8fdc2c722c152ea462535f1080e0f0f5b213ecf7ce3beaed08b19b43f07283a6bb8d16045b7dab63035f94a540f2c369a88e5f78daa1550214f37926ea5f54936638b01f30a25314880475b5148181b0b8de6913597584d4ce943b692e03e9d8d4e852ad768a46d3b2ed606a103b608440791a4556b44660817f24afab7f443969ddbc83337a292ec6b118886e1c6493f97788760f352afd9031e99b069234c80a815cc73f612f4a6607c0237";
     var cipher: [rsa_bytes]u8 = undefined;
-    try std.fmt.hexToBytes(&cipher, cipher_hex);
+    _ = try std.fmt.hexToBytes(&cipher, cipher_hex);
 
     var out: [32]u8 = undefined;
     const msg = try rsaPkcs1v15Decrypt(fake_key_set, &cipher, &out);
     var expected: [32]u8 = undefined;
-    try std.fmt.hexToBytes(&expected, "6691a11375d495ef031d876a1a6ca5b5b00a5eb8644d68ef18e99231546369ab");
+    _ = try std.fmt.hexToBytes(&expected, "6691a11375d495ef031d876a1a6ca5b5b00a5eb8644d68ef18e99231546369ab");
     try std.testing.expectEqualSlices(u8, &expected, msg);
 }
 
@@ -174,7 +174,13 @@ test "rsa pkcs1 v1.5 decrypt rejects a short ciphertext" {
 
 test "sha256 and hmac-sha256 match published vectors" {
     var digest: [32]u8 = undefined;
-    std.fmt.hexToBytes(&digest, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") catch unreachable;
+    _ = std.fmt.hexToBytes(&digest, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") catch unreachable;
     try std.testing.expectEqualSlices(u8, &digest, &sha256(""));
-    try std.testing.expectEqualSlices(u8, &digest, &hmacSha256("", ""));
+
+    // RFC 4231 test case 1.
+    var key: [20]u8 = undefined;
+    @memset(&key, 0x0b);
+    var mac: [32]u8 = undefined;
+    _ = std.fmt.hexToBytes(&mac, "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7") catch unreachable;
+    try std.testing.expectEqualSlices(u8, &mac, &hmacSha256(&key, "Hi There"));
 }

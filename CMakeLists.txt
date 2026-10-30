@@ -18,6 +18,7 @@ if(NOT ZIG_VERSION VERSION_EQUAL "0.16.0")
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_library(ZSTD_LIBRARY NAMES zstd REQUIRED)
 
 set(P2Z_ZIG_PREFIX "${CMAKE_BINARY_DIR}/zig")
 # shortcut: host target only, MSVC uses .lib; add explicit target selection when cross builds are needed.
@@ -49,7 +50,7 @@ add_dependencies(p2z_core p2z_core_build)
 
 qt_add_executable(ps4-pkg2zar ui/main.cpp)
 target_include_directories(ps4-pkg2zar PRIVATE core/src)
-target_link_libraries(ps4-pkg2zar PRIVATE p2z_core Qt6::Widgets)
+target_link_libraries(ps4-pkg2zar PRIVATE p2z_core Qt6::Widgets "${ZSTD_LIBRARY}")
 
 add_custom_target(p2z_zig_test
   COMMAND "${ZIG_EXECUTABLE}" build test

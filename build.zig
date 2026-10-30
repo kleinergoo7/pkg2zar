@@ -11,7 +11,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("core/src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
+    core.linkSystemLibrary("zstd", .{});
 
     const lib = b.addLibrary(.{
         .name = "p2z_core",
