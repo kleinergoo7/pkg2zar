@@ -7,7 +7,14 @@ project(ps4_pkg2zar LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_program(ZIG_EXECUTABLE NAMES zig REQUIRED)
+# Prefer the system 0.16.0 over whatever else is first on PATH (Homebrew ships 0.17).
+if(NOT DEFINED ZIG_EXECUTABLE)
+  if(EXISTS "/usr/bin/zig")
+    set(ZIG_EXECUTABLE "/usr/bin/zig" CACHE FILEPATH "Zig 0.16.0 compiler")
+  else()
+    find_program(ZIG_EXECUTABLE NAMES zig REQUIRED)
+  endif()
+endif()
 execute_process(
   COMMAND "${ZIG_EXECUTABLE}" version
   OUTPUT_VARIABLE ZIG_VERSION
