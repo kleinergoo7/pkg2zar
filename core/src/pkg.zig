@@ -21,8 +21,22 @@ pub const pfs_image_offset_offset: usize = 0x410;
 pub const pfs_image_size_offset: usize = 0x418;
 pub const mount_image_size_offset: usize = 0x428;
 pub const package_size_offset: usize = 0x430;
+pub const pfs_signed_size_offset: usize = 0x438;
+pub const pfs_cache_size_offset: usize = 0x43C;
 pub const split_size_0_offset: usize = 0x480;
 pub const split_size_1_offset: usize = 0x488;
+pub const content_type_offset: usize = 0x74;
+pub const content_flags_offset: usize = 0x78;
+
+/// pkg entry ids that carry key material rather than files.
+pub const entry_id_digests: u32 = 0x1;
+pub const entry_id_entry_keys: u32 = 0x10;
+pub const entry_id_image_key: u32 = 0x20;
+
+pub const content_flag_delta_patch: u32 = 0x41000000;
+pub const content_flag_first_patch: u32 = 0x100000;
+pub const content_flag_subsequent_patch: u32 = 0x40000000;
+pub const content_flag_cumulative_patch: u32 = 0x60000000;
 
 pub const Header = struct {
     content_id: [content_id_len]u8,
@@ -37,7 +51,22 @@ pub const Header = struct {
     mount_image_size: u64,
     package_size: u64,
     split_sizes: [2]u64,
+    pfs_signed_size: u32,
+    pfs_cache_size: u32,
+    content_type: u32,
+    content_flags: u32,
 };
+
+pub const Entry = struct {
+    id: u32,
+    filename_offset: u32,
+    flags1: u32,
+    flags2: u32,
+    offset: u32,
+    size: u32,
+};
+
+pub const entry_size: usize = 32;
 
 pub const Reason = enum {
     too_short,
@@ -89,6 +118,10 @@ pub fn parseHeader(bytes: []const u8, file_size: u64) Result {
             readU64(bytes, split_size_0_offset),
             readU64(bytes, split_size_1_offset),
         },
+        .pfs_signed_size = readU32(bytes, pfs_signed_size_offset),
+        .pfs_cache_size = readU32(bytes, pfs_cache_size_offset),
+        .content_type = readU32(bytes, content_type_offset),
+        .content_flags = readU32(bytes, content_flags_offset),
     };
 
     // Overflow means the values are nonsense, not a huge pkg.
@@ -100,6 +133,34 @@ pub fn parseHeader(bytes: []const u8, file_size: u64) Result {
     }
 
     return .{ .ok = header };
+}
+
+pub const EntryTableError = error{BadOffset};
+
+/// Parse the entry table. `entries.len` must equal the header's entry count.
+pub fn parseEntries(bytes: []const u8, table_offset: u64, entries: []Entry) EntryTableError!void {
+    const start: usize = std.math.cast(usize, table_offset) orelse return error.BadOffset;
+    const need = std.math.mul(usize, entries.len, entry_size) catch return error.BadOffset;
+    if (start > bytes.len or bytes.len - start < need) return error.BadOffset;
+    for (entries, 0..) |*entry, i| {
+        const off = start + i * entry_size;
+        entry.* = .{
+            .id = readU32(bytes, off),
+            .filename_offset = readU32(bytes, off + 4),
+            .flags1 = readU32(bytes, off + 8),
+            .flags2 = readU32(bytes, off + 12),
+            .offset = readU32(bytes, off + 16),
+            .size = readU32(bytes, off + 20),
+        };
+    }
+}
+
+pub fn isPatch(flags: u32) bool {
+    return flags & content_flag_subsequent_patch != 0 or flags & content_flag_first_patch != 0;
+}
+
+pub fn isDeltaPatch(flags: u32) bool {
+    return flags & content_flag_delta_patch == content_flag_delta_patch;
 }
 
 /// Use only after parseHeader returned .ok; the header bounds are already checked.
@@ -208,4 +269,37 @@ test "parseHeader: rejects an offset plus size that overflows" {
         .ok => return error.ExpectedFailure,
         .fail => |f| try std.testing.expectEqual(Reason.image_out_of_range, f.reason),
     }
+}
+
+test "parseEntries: reads a table row in on-disk order" {
+    var table: [entry_size * 2]u8 = [_]u8{0} ** (entry_size * 2);
+    std.mem.writeInt(u32, table[0..4], 0x1200, .big);
+    std.mem.writeInt(u32, table[4..8], 0x6e, .big);
+    std.mem.writeInt(u32, table[8..12], 0, .big);
+    std.mem.writeInt(u32, table[12..16], 0, .big);
+    std.mem.writeInt(u32, table[16..20], 0x5c60, .big);
+    std.mem.writeInt(u32, table[20..24], 0x30e6, .big);
+
+    var entries: [2]Entry = undefined;
+    try parseEntries(&table, 0, &entries);
+    try std.testing.expectEqual(@as(u32, 0x1200), entries[0].id);
+    try std.testing.expectEqual(@as(u32, 0x6e), entries[0].filename_offset);
+    try std.testing.expectEqual(@as(u32, 0x5c60), entries[0].offset);
+    try std.testing.expectEqual(@as(u32, 0x30e6), entries[0].size);
+    try std.testing.expectEqual(@as(u32, 0), entries[1].id);
+}
+
+test "parseEntries: rejects a table past the end" {
+    var table: [entry_size]u8 = [_]u8{0} ** entry_size;
+    var entries: [2]Entry = undefined;
+    try std.testing.expectError(error.BadOffset, parseEntries(&table, 0, &entries));
+    try std.testing.expectError(error.BadOffset, parseEntries(&table, 0x1000, entries[0..1]));
+}
+
+test "content flags: delta and patch detection" {
+    try std.testing.expect(isDeltaPatch(content_flag_delta_patch));
+    try std.testing.expect(!isDeltaPatch(content_flag_first_patch));
+    try std.testing.expect(isPatch(content_flag_first_patch));
+    try std.testing.expect(isPatch(content_flag_subsequent_patch));
+    try std.testing.expect(!isPatch(0x0A000000));
 }

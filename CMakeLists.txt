@@ -27,6 +27,8 @@ else()
   set(P2Z_CORE_LIB "${P2Z_ZIG_PREFIX}/lib/libp2z_core.a")
 endif()
 
+file(GLOB_RECURSE P2Z_ZIG_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/core/src/*.zig")
+
 add_custom_command(
   OUTPUT "${P2Z_CORE_LIB}"
   COMMAND "${ZIG_EXECUTABLE}" build -Doptimize=ReleaseFast --prefix "${P2Z_ZIG_PREFIX}"
@@ -34,8 +36,7 @@ add_custom_command(
   DEPENDS
     "${CMAKE_SOURCE_DIR}/build.zig"
     "${CMAKE_SOURCE_DIR}/build.zig.zon"
-    "${CMAKE_SOURCE_DIR}/core/src/root.zig"
-    "${CMAKE_SOURCE_DIR}/core/src/pkg.zig"
+    ${P2Z_ZIG_SOURCES}
   COMMENT "Building p2z_core with Zig"
   VERBATIM
 )
