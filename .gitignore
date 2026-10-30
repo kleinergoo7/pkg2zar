@@ -1,6 +1,7 @@
 test-rom/
-build/
 zig-out/
 .zig-cache/
+# Zig fetches dependencies into this directory; never commit it.
+zig-pkg/
 *.zar
 *.zar.part
