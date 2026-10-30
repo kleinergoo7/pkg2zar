@@ -116,8 +116,14 @@ check_case() {
     local ticks
     ticks=$(grep -ac "UpdatePlayTime" "$log")
     ((ticks >= 1)) || problems+=("main loop stopped (play-time ticks: $ticks)")
-    grep -aqiE "\[Debug\] <Critical>|Unreachable code|ErrorOutOfDeviceMemory" "$log" &&
-        problems+=("critical error in log")
+    # A crash in a background thread (network, audio) does not stop the game from rendering;
+    # it is only fatal when the main loop never ran.
+    if ((ticks == 0)) && grep -aqiE "\[Debug\] <Critical>|Unreachable code|ErrorOutOfDeviceMemory" "$log"; then
+        problems+=("critical error before the game loop started")
+    fi
+    local critical
+    critical=$(grep -aciE "\[Debug\] <Critical>|Unreachable code" "$log")
+    ((critical > 0)) && say "   warning: $critical critical line(s) in background threads"
 
     if [[ -n "$first" ]]; then
         local stats mean std

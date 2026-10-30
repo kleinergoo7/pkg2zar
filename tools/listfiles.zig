@@ -34,21 +34,26 @@ pub fn main(init: std.process.Init) !void {
     };
     defer src.close();
 
-    var out: std.Io.Writer = .fixed(try arena.alloc(u8, 256 * 1024));
     var file_count: usize = 0;
     var dir_count: usize = 0;
+    var line: [1024]u8 = undefined;
+    const stdout = std.Io.File.stdout();
     for (src.walk.entries) |entry| {
         switch (entry.kind) {
             .file => file_count += 1,
             .dir => dir_count += 1,
         }
-        try out.print("{s} {s}\n", .{ @tagName(entry.kind), entry.path });
+        const text = try std.fmt.bufPrint(&line, "{s} {s}\n", .{ @tagName(entry.kind), entry.path });
+        try stdout.writeStreamingAll(init.io, text);
     }
-    try out.print("-- pfs: {d} files, {d} dirs, {d} inodes\n", .{ file_count, dir_count, src.walk.inodes.len });
+    const summary = try std.fmt.bufPrint(&line, "-- pfs: {d} files, {d} dirs, {d} inodes\n", .{ file_count, dir_count, src.walk.inodes.len });
+    try stdout.writeStreamingAll(init.io, summary);
 
     const sce = try src.sceFiles();
-    for (sce) |file| try out.print("pkg_entry {s} ({d} bytes)\n", .{ file.path, file.entry.size });
-    try out.print("-- sce_sys entries: {d}\n", .{sce.len});
-
-    try std.Io.File.stdout().writeStreamingAll(init.io, out.buffer[0..out.end]);
+    for (sce) |file| {
+        const text = try std.fmt.bufPrint(&line, "pkg_entry {s} ({d} bytes)\n", .{ file.path, file.entry.size });
+        try stdout.writeStreamingAll(init.io, text);
+    }
+    const sce_summary = try std.fmt.bufPrint(&line, "-- sce_sys entries: {d}\n", .{sce.len});
+    try stdout.writeStreamingAll(init.io, sce_summary);
 }

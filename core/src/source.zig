@@ -57,6 +57,12 @@ pub const Source = struct {
     entry_names: []const u8,
     walk: pfs.Walk,
     keys: unpack.Keys = undefined,
+    pfsc_offset: usize = 0,
+    sector_map: []const u8 = &.{},
+    block_count: usize = 0,
+    cipher_scratch: []u8 = &.{},
+    plain_scratch: []u8 = &.{},
+    out_scratch: []u8 = &.{},
 
     pub fn open(io: std.Io, arena: std.mem.Allocator, paths: []const []const u8) error{OutOfMemory}!Result {
         const files = try arena.alloc(std.Io.File, paths.len);
@@ -146,47 +152,83 @@ pub const Source = struct {
             sector += 1;
         }
 
-        source.walk = pfs.walk(arena, plain) catch |err|
+        const layout = pfs.parseLayout(plain) catch |err|
+            return .{ .fail = .{ .walk = err } };
+        const map_len = (layout.block_count + 1) * 8;
+        const map_end = std.math.add(u64, layout.map_start, map_len) catch
+            return .{ .fail = .{ .walk = error.BlockOutOfRange } };
+        if (map_end > source.header.pfs_image_size) return .{ .fail = .{ .walk = error.BlockOutOfRange } };
+        source.cipher_scratch = try arena.alloc(u8, 0x11000);
+        source.plain_scratch = try arena.alloc(u8, 0x11000);
+        source.out_scratch = try arena.alloc(u8, pfs.block_size);
+        const map = source.decryptImageRange(layout.map_start, map_len) catch
+            return .{ .fail = .{ .walk = error.BlockOutOfRange } };
+        source.pfsc_offset = layout.pfsc_offset;
+        source.sector_map = map;
+        source.block_count = layout.block_count;
+        source.walk = pfs.walk(arena, layout, map, .{ .ctx = &source, .read = readBlockThunk }) catch |err|
             return .{ .fail = .{ .walk = err } };
 
         return .{ .ok = source };
     }
 
-    /// One decompressed PFSC block of a file, by block index within that file.
-    /// Returns a slice of `out`, shorter than 0x10000 only for the final block.
-    pub fn readPfsBlock(self: *const Source, block_index: usize, out: *[pfs.block_size]u8) ![]const u8 {
-        const range = self.walk.blockRange(block_index) orelse return error.BlockOutOfRange;
-        if (range.end < range.start) return error.BadSectorMap;
-        const size: usize = @intCast(range.end - range.start);
-        if (size == 0 or size > pfs.block_size) return error.BadSectorMap;
-
-        const rel = self.walk.pfsc_offset + range.start;
+    /// Decrypts `len` bytes at `rel` (offset inside the PFS image) into fresh arena memory.
+    fn decryptImageRange(self: *Source, rel: u64, len: usize) ![]u8 {
         const aligned = rel & ~@as(u64, 0xFFF);
         const skip: usize = @intCast(rel - aligned);
-        const span = skip + size;
+        const span = skip + len;
         const sectors = (span + 0xFFF) / 0x1000;
-
-        var cipher: [0x11000]u8 = undefined;
-        var plain: [0x11000]u8 = undefined;
         const want = @as(usize, @intCast(sectors)) * 0x1000;
-        try self.stream.readExact(self.io, self.header.pfs_image_offset + aligned, cipher[0..want]);
+        const cipher = try self.arena.alloc(u8, want);
+        const plain = try self.arena.alloc(u8, want);
+        try self.stream.readExact(self.io, self.header.pfs_image_offset + aligned, cipher);
         var s: usize = 0;
         while (s < want) : (s += 0x1000) {
             const sector_index = (aligned + s) / 0x1000;
             crypto.xtsDecrypt(self.keys.data, self.keys.tweak, sector_index, cipher[s..][0..0x1000], plain[s..][0..0x1000]);
         }
-        const compressed = plain[skip..][0..size];
-        if (size == pfs.block_size) {
-            @memcpy(out, compressed);
-            return out;
+        return plain[skip..][0..len];
+    }
+
+    /// One decompressed PFSC block, by absolute block index inside the PFSC table.
+    /// The returned slice is valid until the next block read.
+    fn readBlockRaw(self: *Source, block_index: usize) pfs.Error![]const u8 {
+        const range = pfs.blockRange(self.sector_map, self.block_count, block_index) orelse
+            return error.BlockOutOfRange;
+        if (range.end < range.start) return error.BadSectorMap;
+        const size: usize = @intCast(range.end - range.start);
+        if (size == 0 or size > pfs.block_size) return error.BadSectorMap;
+
+        const rel = self.pfsc_offset + range.start;
+        const aligned = rel & ~@as(u64, 0xFFF);
+        const skip: usize = @intCast(rel - aligned);
+        const want = ((skip + size + 0xFFF) / 0x1000) * 0x1000;
+        std.debug.assert(want <= self.cipher_scratch.len);
+        self.stream.readExact(self.io, self.header.pfs_image_offset + aligned, self.cipher_scratch[0..want]) catch
+            return error.BlockOutOfRange;
+        var s: usize = 0;
+        while (s < want) : (s += 0x1000) {
+            const sector_index = (aligned + s) / 0x1000;
+            crypto.xtsDecrypt(self.keys.data, self.keys.tweak, sector_index, self.cipher_scratch[s..][0..0x1000], self.plain_scratch[s..][0..0x1000]);
         }
+        const compressed = self.plain_scratch[skip..][0..size];
+        if (size == pfs.block_size) return compressed;
+
         var in: std.Io.Reader = .fixed(compressed);
         var window: [std.compress.flate.max_window_len]u8 = undefined;
         var decompress: std.compress.flate.Decompress = .init(&in, .zlib, &window);
-        var writer: std.Io.Writer = .fixed(out);
+        var writer: std.Io.Writer = .fixed(self.out_scratch);
         _ = decompress.reader.streamRemaining(&writer) catch return error.InflateFailed;
         if (writer.end == 0) return error.InflateFailed;
-        return out[0..writer.end];
+        return self.out_scratch[0..writer.end];
+    }
+
+    /// One decompressed PFSC block of a file, by block index within that file.
+    pub fn readPfsBlock(self: *const Source, block_index: usize, out: *[pfs.block_size]u8) ![]const u8 {
+        const data = try @constCast(self).readBlockRaw(block_index);
+        if (data.len > out.len) return error.BadSectorMap;
+        @memcpy(out[0..data.len], data);
+        return out[0..data.len];
     }
 
     pub fn close(self: Source) void {
@@ -268,6 +310,11 @@ pub const Source = struct {
         return self.stream.total;
     }
 };
+
+fn readBlockThunk(ctx: *anyopaque, index: usize) pfs.Error![]const u8 {
+    const self: *Source = @ptrCast(@alignCast(ctx));
+    return self.readBlockRaw(index);
+}
 
 fn findEntry(entries: []const pkg.Entry, id: u32) ?pkg.Entry {
     for (entries) |entry| {

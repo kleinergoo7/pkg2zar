@@ -28,6 +28,7 @@ pub const Error = error{
     InflateFailed,
     MissingInode,
     BadDirent,
+    BadSectorMap,
 };
 
 pub fn reasonName(err: Error) []const u8 {
@@ -39,6 +40,7 @@ pub fn reasonName(err: Error) []const u8 {
         error.InflateFailed => "PFSC block failed to inflate",
         error.MissingInode => "directory entry refers to a missing inode",
         error.BadDirent => "malformed directory entry",
+        error.BadSectorMap => "sector map block size is invalid",
     };
 }
 
@@ -74,12 +76,27 @@ pub const Walk = struct {
     }
 };
 
-/// `image` is the decrypted PFS image, or the raw image when the pkg stores it unencrypted.
-/// Only the blocks reachable inside `image` are read, so callers pass at least the first
-/// `pfs_cache_size * 2` bytes as the reference implementation does.
-pub fn walk(arena: std.mem.Allocator, image: []const u8) Error!Walk {
-    const pfsc_offset = findPfsc(image) orelse return error.NoPfsc;
+pub const Layout = struct {
+    pfsc_offset: usize,
+    block_count: usize,
+    /// Absolute offset of the sector map inside the PFS image, not inside the prefix.
+    map_start: u64,
+};
 
+pub fn blockRange(map: []const u8, block_count: usize, index: usize) ?struct { start: u64, end: u64 } {
+    if (index >= block_count) return null;
+    return .{ .start = readU64(map, index * 8), .end = readU64(map, (index + 1) * 8) };
+}
+
+/// Reads PFSC blocks on demand. The returned slice must stay valid until the next call.
+pub const BlockReader = struct {
+    ctx: *anyopaque,
+    read: *const fn (ctx: *anyopaque, index: usize) Error![]const u8,
+};
+
+/// Finds the PFSC table inside a decrypted prefix of the image and parses its header.
+pub fn parseLayout(image: []const u8) Error!Layout {
+    const pfsc_offset = findPfsc(image) orelse return error.NoPfsc;
     const header = image[pfsc_offset..];
     if (header.len < 0x30) return error.BadPfscHeader;
     const block_size2 = readU64(header, 0x10);
@@ -87,13 +104,21 @@ pub fn walk(arena: std.mem.Allocator, image: []const u8) Error!Walk {
     const data_length = readU64(header, 0x28);
     if (block_size2 != block_size) return error.BadPfscHeader;
 
-    const block_count: usize = @intCast(data_length / block_size2); // checked against the map below
-    const map_start = std.math.add(usize, pfsc_offset, @intCast(block_offsets)) catch
+    const block_count: usize = @intCast(data_length / block_size2);
+    const map_start = std.math.add(u64, @intCast(pfsc_offset), block_offsets) catch
         return error.BadPfscHeader;
-    if (map_start + (block_count + 1) * 8 > image.len) return error.BlockOutOfRange;
-    const map = image[map_start..];
+    return .{
+        .pfsc_offset = pfsc_offset,
+        .block_count = block_count,
+        .map_start = map_start,
+    };
+}
 
-    const block0 = try readBlock(arena, image, pfsc_offset, map, 0);
+pub fn walk(arena: std.mem.Allocator, layout: Layout, map: []const u8, reader: BlockReader) Error!Walk {
+    const pfsc_offset = layout.pfsc_offset;
+    const block_count = layout.block_count;
+
+    const block0 = try reader.read(reader.ctx, 0);
     const inode_count: usize = readU32(block0, 0x30);
     if (inode_count == 0) return error.BadPfscHeader;
     const inode_blocks = (inode_count * inode_stride + block_size - 1) / block_size;
@@ -102,7 +127,7 @@ pub fn walk(arena: std.mem.Allocator, image: []const u8) Error!Walk {
     var inode_found: usize = 0;
     var b: usize = 1;
     while (b <= inode_blocks and b < block_count) : (b += 1) {
-        const block = try readBlock(arena, image, pfsc_offset, map, b);
+        const block = try reader.read(reader.ctx, b);
         var off: usize = 0;
         while (off + inode_stride <= block.len and inode_found < inode_count) : (off += inode_stride) {
             const mode = readU16(block, off + inode_mode_offset);
@@ -119,23 +144,47 @@ pub fn walk(arena: std.mem.Allocator, image: []const u8) Error!Walk {
     if (inode_found != inode_count) return error.BadPfscHeader;
     inodes = inodes[0..inode_found];
 
-    // Directory blocks follow the inode blocks, interleaved with file data blocks. Each
-    // directory block starts with ".<self>" then "..<parent>".
-    const DirBlock = struct { self_ino: u32, bytes: []const u8 };
-    var dir_blocks = std.ArrayList(DirBlock).empty;
+    // Directory blocks: one block per directory that fits, continuation blocks for the
+    // rest. Every group starts with ".<self>" then "..<parent>"; continuation blocks have
+    // no header and are attached to the group being read.
+    const DirGroup = struct {
+        self_ino: u32,
+        parent_ino: u32,
+        children: std.ArrayListUnmanaged(Child) = .empty,
+    };
+
+    // File inodes claim their data blocks; whatever is left can only be metadata. Scanning
+    // only the unclaimed blocks keeps a multi-GB image fast without skipping directories.
+    const claimed = try arena.alloc(bool, block_count);
+    @memset(claimed, false);
+    for (inodes) |inode| {
+        if (inode.mode & 0x8000 == 0) continue;
+        var j: usize = 0;
+        while (j < inode.blocks) : (j += 1) {
+            const idx = @as(usize, inode.loc) + j;
+            if (idx < block_count) claimed[idx] = true;
+        }
+    }
+
+    var groups = std.ArrayListUnmanaged(DirGroup).empty;
+    var current: ?usize = null;
     var block_index: usize = inode_blocks + 1;
     while (block_index < block_count) : (block_index += 1) {
-        const raw = readBlock(arena, image, pfsc_offset, map, block_index) catch |err| switch (err) {
+        if (claimed[block_index]) continue;
+        const raw = reader.read(reader.ctx, block_index) catch |err| switch (err) {
             error.BlockOutOfRange => break,
             else => return err,
         };
-        const first = parseDirent(raw, 0) catch continue;
-        if (first.type != dirent_type_self) continue;
-        const second = parseDirent(raw, first.entsize) catch continue;
-        if (second.type != dirent_type_parent) continue;
-        try dir_blocks.append(arena, .{ .self_ino = first.ino, .bytes = raw });
+        if (direntGroupStart(raw)) |start| {
+            try groups.append(arena, .{ .self_ino = start.self.ino, .parent_ino = start.parent.ino });
+            current = groups.items.len - 1;
+            try appendChildren(arena, raw, start.child_off, &groups.items[current.?].children);
+        } else if (current) |ci| {
+            const off = findEntryStart(raw) orelse continue;
+            try appendChildren(arena, raw, off, &groups.items[ci].children);
+        }
     }
-    if (dir_blocks.items.len == 0) return error.BadDirent;
+    if (groups.items.len == 0) return error.BadDirent;
 
     // Directory names come from the parent's listing, never from the "." entry.
     const dir_parent = try arena.alloc(?u32, inode_count);
@@ -143,18 +192,13 @@ pub fn walk(arena: std.mem.Allocator, image: []const u8) Error!Walk {
     @memset(dir_parent, null);
     @memset(dir_name, null);
     var root_ino: ?u32 = null;
-    for (dir_blocks.items) |block| {
-        const self_entry = parseDirent(block.bytes, 0) catch continue;
-        const parent_entry = parseDirent(block.bytes, self_entry.entsize) catch continue;
-        if (parent_entry.ino == self_entry.ino) root_ino = self_entry.ino;
-        var off: usize = self_entry.entsize + parent_entry.entsize;
-        while (off < block.bytes.len) {
-            const dirent = parseDirent(block.bytes, off) catch break;
-            off += dirent.entsize;
-            if (dirent.type != dirent_type_dir) continue;
-            if (dirent.ino >= inode_count) return error.MissingInode;
-            dir_parent[dirent.ino] = self_entry.ino;
-            dir_name[dirent.ino] = try arena.dupe(u8, dirent.name);
+    for (groups.items) |group| {
+        if (group.parent_ino == group.self_ino) root_ino = group.self_ino;
+        for (group.children.items) |child| {
+            if (child.kind != dirent_type_dir) continue;
+            if (child.ino >= inode_count) return error.MissingInode;
+            dir_parent[child.ino] = group.self_ino;
+            dir_name[child.ino] = try arena.dupe(u8, child.name);
         }
     }
     const root = root_ino orelse return error.BadDirent;
@@ -165,40 +209,30 @@ pub fn walk(arena: std.mem.Allocator, image: []const u8) Error!Walk {
     var pass: usize = 0;
     while (pass <= inode_count) : (pass += 1) {
         var progress = false;
-        for (dir_blocks.items) |block| {
-            const self_entry = parseDirent(block.bytes, 0) catch continue;
-            if (dir_paths[self_entry.ino] != null) continue;
-            const parent = dir_parent[self_entry.ino] orelse continue;
+        for (groups.items) |group| {
+            if (dir_paths[group.self_ino] != null) continue;
+            const parent = dir_parent[group.self_ino] orelse continue;
             const parent_path = dir_paths[parent] orelse continue;
-            const name = dir_name[self_entry.ino] orelse continue;
-            dir_paths[self_entry.ino] = try joinPath(arena, parent_path, name);
+            const name = dir_name[group.self_ino] orelse continue;
+            dir_paths[group.self_ino] = try joinPath(arena, parent_path, name);
             progress = true;
         }
         if (!progress) break;
     }
 
     var entries = std.ArrayList(Entry).empty;
-    for (dir_blocks.items) |block| {
-        const self_entry = parseDirent(block.bytes, 0) catch return error.BadDirent;
-        const dir_ino = self_entry.ino;
-        const dir_path = dir_paths[dir_ino] orelse return error.BadDirent;
-
-        var off: usize = self_entry.entsize;
-        const parent = parseDirent(block.bytes, off) catch return error.BadDirent;
-        off += parent.entsize;
-        while (off < block.bytes.len) {
-            const dirent = parseDirent(block.bytes, off) catch break;
-            off += dirent.entsize;
-            if (dirent.type != dirent_type_file and dirent.type != dirent_type_dir) continue;
-            if (dirent.ino >= inode_count) return error.MissingInode;
-            const inode = inodes[dirent.ino];
+    for (groups.items) |group| {
+        const dir_path = dir_paths[group.self_ino] orelse return error.BadDirent;
+        for (group.children.items) |child| {
+            if (child.kind != dirent_type_file and child.kind != dirent_type_dir) continue;
+            if (child.ino >= inode_count) return error.MissingInode;
+            const inode = inodes[child.ino];
             if (inode.mode == 0) return error.MissingInode;
-
-            const path = try joinPath(arena, dir_path, dirent.name);
+            const path = try joinPath(arena, dir_path, child.name);
             try entries.append(arena, .{
                 .path = path,
-                .inode = dirent.ino,
-                .kind = if (dirent.type == dirent_type_dir) .dir else .file,
+                .inode = child.ino,
+                .kind = if (child.kind == dirent_type_dir) .dir else .file,
                 .size = inode.size,
                 .blocks = inode.blocks,
                 .loc = inode.loc,
@@ -213,6 +247,55 @@ pub fn walk(arena: std.mem.Allocator, image: []const u8) Error!Walk {
         .map = map[0 .. (block_count + 1) * 8],
         .block_count = block_count,
     };
+}
+
+const Child = struct { ino: u32, kind: u32, name: []const u8 };
+
+const GroupStart = struct {
+    self: Dirent,
+    parent: Dirent,
+    child_off: usize,
+};
+
+fn direntGroupStart(block: []const u8) ?GroupStart {
+    const self_entry = parseDirent(block, 0) catch return null;
+    if (self_entry.type != dirent_type_self) return null;
+    const parent_entry = parseDirent(block, self_entry.entsize) catch return null;
+    if (parent_entry.type != dirent_type_parent) return null;
+    return .{ .self = self_entry, .parent = parent_entry, .child_off = self_entry.entsize + parent_entry.entsize };
+}
+
+/// A continuation block may begin in the middle of an entry; find the first offset that
+/// parses as two consecutive sane entries.
+fn findEntryStart(block: []const u8) ?usize {
+    var off: usize = 0;
+    while (off < 64 and off + 16 <= block.len) : (off += 1) {
+        const first = parseDirent(block, off) catch continue;
+        if (first.ino == 0) continue;
+        if (parseDirent(block, off + first.entsize)) |second| {
+            if (second.ino != 0) return off;
+        } else |_| {}
+    }
+    return null;
+}
+
+fn appendChildren(
+    arena: std.mem.Allocator,
+    block: []const u8,
+    first_offset: usize,
+    out: *std.ArrayListUnmanaged(Child),
+) !void {
+    var off = first_offset;
+    while (off < block.len) {
+        const dirent = parseDirent(block, off) catch break;
+        off += dirent.entsize;
+        if (dirent.type != dirent_type_file and dirent.type != dirent_type_dir) continue;
+        try out.append(arena, .{
+            .ino = dirent.ino,
+            .kind = dirent.type,
+            .name = try arena.dupe(u8, dirent.name),
+        });
+    }
 }
 
 const Dirent = struct {
@@ -251,33 +334,6 @@ fn findPfsc(image: []const u8) ?usize {
         if (readU32(image, offset) == pfsc_magic) return offset;
     }
     return null;
-}
-
-fn readBlock(
-    arena: std.mem.Allocator,
-    image: []const u8,
-    pfsc_offset: usize,
-    map: []const u8,
-    index: usize,
-) Error![]const u8 {
-    if ((index + 1) * 8 > map.len) return error.BlockOutOfRange;
-    const start: usize = @intCast(readU64(map, index * 8));
-    const end: usize = @intCast(readU64(map, (index + 1) * 8));
-    const block_start = std.math.add(usize, pfsc_offset, start) catch return error.BlockOutOfRange;
-    const block_end = std.math.add(usize, pfsc_offset, end) catch return error.BlockOutOfRange;
-    if (end < start or block_end > image.len) return error.BlockOutOfRange;
-
-    if (end - start == block_size) return arena.dupe(u8, image[block_start..block_end]);
-    if (end == start) return error.BadPfscHeader;
-
-    var in: std.Io.Reader = .fixed(image[block_start..block_end]);
-    var window: [std.compress.flate.max_window_len]u8 = undefined;
-    var decompress: std.compress.flate.Decompress = .init(&in, .zlib, &window);
-    const out = try arena.alloc(u8, block_size);
-    var writer: std.Io.Writer = .fixed(out);
-    _ = decompress.reader.streamRemaining(&writer) catch return error.InflateFailed;
-    if (writer.end == 0) return error.InflateFailed;
-    return out[0..writer.end];
 }
 
 fn readU16(bytes: []const u8, offset: usize) u16 {
