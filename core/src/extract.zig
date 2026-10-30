@@ -8,6 +8,7 @@ const std = @import("std");
 const plan_mod = @import("plan.zig");
 const source = @import("source.zig");
 const pfs = @import("pfs.zig");
+const pkg = @import("pkg.zig");
 const export_mod = @import("export.zig");
 
 pub const Progress = export_mod.Progress;
@@ -92,6 +93,13 @@ pub fn run(
                 const src = &sources[item.source_index];
                 const file = std.Io.Dir.cwd().createFile(io, target, .{}) catch return error.CreateFailed;
                 defer file.close(io);
+                if (pkg.entryNeedsDecryption(entry.id)) {
+                    const data = src.sceEntryData(entry) catch return error.ReadFailed;
+                    file.writeStreamingAll(io, data) catch return error.WriteFailed;
+                    done += data.len;
+                    report(options, done, total, current);
+                    continue;
+                }
                 var offset: u64 = 0;
                 while (offset < entry.size) {
                     if (options.cancel.load(.acquire)) return error.Cancelled;

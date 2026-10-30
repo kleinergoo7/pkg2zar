@@ -37,6 +37,8 @@ pub fn reasonName(err: Error) []const u8 {
 pub const Keys = struct {
     data: [16]u8,
     tweak: [16]u8,
+    /// pkg derived key 3, needed to decrypt the sce_sys NP entries (0x400-0x403).
+    dk3: [32]u8,
 };
 
 /// Reads key material through the piece-aware stream, checking every range against the size.
@@ -97,6 +99,7 @@ pub fn derive(
     return .{
         .tweak = digest[0..16].*,
         .data = digest[16..32].*,
+        .dk3 = dk3[0..32].*,
     };
 }
 

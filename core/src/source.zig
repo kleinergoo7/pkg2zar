@@ -197,12 +197,44 @@ pub const Source = struct {
     pub fn sceFiles(self: Source) ![]SceFile {
         var out: std.ArrayListUnmanaged(SceFile) = .empty;
         for (self.entries) |entry| {
-            if (entry.filename_offset == 0 or entry.size == 0) continue;
-            const name = self.entryName(entry) orelse continue;
+            if (entry.size == 0) continue;
+            const name = self.entryName(entry) orelse pkg.entryNameById(entry.id) orelse continue;
             const path = try std.fmt.allocPrint(self.arena, "sce_sys/{s}", .{name});
             try out.append(self.arena, .{ .path = path, .entry = entry });
         }
         return out.toOwnedSlice(self.arena);
+    }
+
+    /// Full contents of an sce_sys entry, decrypting the NP files (0x400-0x403) the way the
+    /// reference implementation does. Allocated in the source arena.
+    pub fn sceEntryData(self: *const Source, entry: pkg.Entry) ![]u8 {
+        const buf = try self.arena.alloc(u8, entry.size);
+        if (!pkg.entryNeedsDecryption(entry.id)) {
+            try self.stream.readExact(self.io, entry.offset, buf);
+            return buf;
+        }
+        const padded_len = (entry.size + 15) & ~@as(usize, 15);
+        const cipher = try self.arena.alloc(u8, padded_len);
+        @memset(cipher, 0);
+        try self.stream.readExact(self.io, entry.offset, cipher[0..entry.size]);
+
+        var raw: [32]u8 = undefined;
+        std.mem.writeInt(u32, raw[0..4], entry.id, .big);
+        std.mem.writeInt(u32, raw[4..8], entry.filename_offset, .big);
+        std.mem.writeInt(u32, raw[8..12], entry.flags1, .big);
+        std.mem.writeInt(u32, raw[12..16], entry.flags2, .big);
+        std.mem.writeInt(u32, raw[16..20], entry.offset, .big);
+        std.mem.writeInt(u32, raw[20..24], entry.size, .big);
+        @memset(raw[24..32], 0);
+        var hashed: [64]u8 = undefined;
+        @memcpy(hashed[0..32], &raw);
+        @memcpy(hashed[32..], &self.keys.dk3);
+        const iv_key = crypto.sha256(&hashed);
+
+        const plain = try self.arena.alloc(u8, padded_len);
+        crypto.aesCbcDecrypt(iv_key[16..32].*, iv_key[0..16].*, cipher, plain);
+        @memcpy(buf, plain[0..entry.size]);
+        return buf;
     }
 
     fn entryName(self: Source, entry: pkg.Entry) ?[]const u8 {

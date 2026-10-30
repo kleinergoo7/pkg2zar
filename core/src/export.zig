@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const plan_mod = @import("plan.zig");
+const pkg = @import("pkg.zig");
 const source = @import("source.zig");
 const zar = @import("zar.zig");
 const pfs = @import("pfs.zig");
@@ -95,6 +96,13 @@ pub fn run(
                 const entry = item.entry.?;
                 const src = &sources[item.source_index];
                 writer.startFile(item.path) catch return error.WriteFailed;
+                if (pkg.entryNeedsDecryption(entry.id)) {
+                    const data = src.sceEntryData(entry) catch return error.ReadFailed;
+                    writer.appendData(data) catch return error.WriteFailed;
+                    done += data.len;
+                    report(options, done, total, current);
+                    continue;
+                }
                 var offset: u64 = 0;
                 while (offset < entry.size) {
                     if (options.cancel.load(.acquire)) return error.Cancelled;

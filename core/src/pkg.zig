@@ -35,6 +35,22 @@ pub const entry_id_image_key: u32 = 0x20;
 pub const entry_id_entry_names: u32 = 0x200;
 pub const entry_id_param_sfo: u32 = 0x1000;
 
+/// sce_sys files whose entry rows carry no name-table offset; the id is the name.
+pub fn entryNameById(id: u32) ?[]const u8 {
+    return switch (id) {
+        0x400 => "license.dat",
+        0x401 => "license.info",
+        0x402 => "nptitle.dat",
+        0x403 => "npbind.dat",
+        0x404 => "selfinfo.dat",
+        0x406 => "imageinfo.dat",
+        0x407 => "target-deltainfo.dat",
+        0x408 => "origin-deltainfo.dat",
+        0x409 => "psreserved.dat",
+        else => null,
+    };
+}
+
 pub const content_flag_delta_patch: u32 = 0x41000000;
 pub const content_flag_first_patch: u32 = 0x100000;
 pub const content_flag_subsequent_patch: u32 = 0x40000000;
@@ -155,6 +171,11 @@ pub fn parseEntries(bytes: []const u8, table_offset: u64, entries: []Entry) Entr
             .size = readU32(bytes, off + 20),
         };
     }
+}
+
+/// The sce_sys NP entries are stored encrypted with a key derived from their own row.
+pub fn entryNeedsDecryption(id: u32) bool {
+    return id == 0x400 or id == 0x401 or id == 0x402 or id == 0x403;
 }
 
 pub fn isPatch(flags: u32) bool {
