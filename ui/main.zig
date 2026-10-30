@@ -44,6 +44,9 @@ const Unit = struct {
 
 const Job = struct {
     units: []Unit,
+    /// One outcome per unit, so each input gets its own result line.
+    outcomes: []p2z.bridge.Outcome,
+    unit_index: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     kind: p2z.bridge.Kind,
     overwrite: bool,
     done: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
@@ -212,6 +215,13 @@ fn controls() void {
 
 fn progressBar() void {
     const job = state.job orelse return;
+    const count = job.units.len;
+    const index = @min(job.unit_index.load(.acquire), count - 1);
+    // One bar per unit: a sequence of separate outputs must not look like one long job.
+    if (count > 1) {
+        dvui.label(@src(), "{d}/{d}  {s}", .{ index + 1, count, std.fs.path.basename(job.units[index].output) }, .{});
+    }
+
     const total = job.total.load(.acquire);
     const done = job.done.load(.acquire);
     const percent: f32 = if (total == 0) 0 else @as(f32, @floatFromInt(done)) / @as(f32, @floatFromInt(total));
@@ -382,7 +392,9 @@ fn startConversion() void {
 
     const job = state.gpa.create(Job) catch return;
     const units = state.gpa.alloc(Unit, targets.items.len) catch return;
-    job.* = .{ .units = units, .kind = kind, .overwrite = overwrite };
+    const outcomes = state.gpa.alloc(p2z.bridge.Outcome, targets.items.len) catch return;
+    @memset(outcomes, .failed);
+    job.* = .{ .units = units, .outcomes = outcomes, .kind = kind, .overwrite = overwrite };
 
     for (targets.items, 0..) |target, i| {
         const source_indexes: []const usize = if (separate)
@@ -405,13 +417,19 @@ fn startConversion() void {
 
     job.thread = std.Thread.spawn(.{}, worker, .{job}) catch return;
     state.job = job;
-    log("Starting {s}...", .{if (state.extract) "extract" else if (units[0].inputs.len == 2) "merge" else "convert"});
+    log("Starting {s}{s}...", .{
+        if (state.extract) "extract" else if (units[0].inputs.len == 2) "merge" else "convert",
+        if (units.len > 1) " of each input separately" else "",
+    });
 }
 
 fn worker(job: *Job) void {
-    var outcome: p2z.bridge.Outcome = .ok;
-    for (job.units) |unit| {
-        outcome = p2z.bridge.run(
+    for (job.units, 0..) |unit, i| {
+        job.unit_index.store(i, .release);
+        job.done.store(0, .release);
+        job.total.store(0, .release);
+        job.current_len.store(0, .release);
+        const outcome = p2z.bridge.run(
             unit.mode,
             job.kind,
             job.overwrite,
@@ -421,9 +439,9 @@ fn worker(job: *Job) void {
             job,
             &job.error_buf,
         );
+        job.outcomes[i] = outcome;
         if (outcome != .ok) break;
     }
-    job.code.store(@backingInt(outcome), .release);
     job.running.store(false, .release);
 }
 
@@ -442,13 +460,26 @@ fn pollJob() void {
     if (job.running.load(.acquire)) return;
 
     job.thread.join();
-    const outcome: p2z.bridge.Outcome = @fromBackingInt(@intCast(job.code.load(.acquire)));
-    switch (outcome) {
-        .ok, .cancelled => log("{s}", .{std.mem.sliceTo(&job.error_buf, 0)}),
-        .failed => log("Failed: {s}", .{std.mem.sliceTo(&job.error_buf, 0)}),
+
+    const message = std.mem.sliceTo(&job.error_buf, 0);
+    var all_ok = true;
+    for (job.units, job.outcomes) |unit, outcome| {
+        switch (outcome) {
+            .ok => log("{s}", .{unit.output}),
+            .cancelled => {
+                all_ok = false;
+                log("cancelled: {s}", .{unit.output});
+            },
+            .failed => {
+                all_ok = false;
+                log("failed: {s}: {s}", .{ unit.output, message });
+            },
+        }
     }
-    if (outcome == .ok or outcome == .cancelled) {
-        if (job.error_buf[0] == 0) logOwned(state.gpa.dupe(u8, if (outcome == .ok) "Done." else "Cancelled. No output written.") catch return);
+    if (all_ok) {
+        // A successful run can still carry a note, e.g. that the input order was swapped.
+        if (message.len > 0) log("{s}", .{message});
+        log("Done: {d} output(s).", .{job.units.len});
     }
 
     for (job.units) |unit| {
@@ -456,6 +487,7 @@ fn pollJob() void {
         state.gpa.free(unit.inputs);
         state.gpa.free(unit.output);
     }
+    state.gpa.free(job.outcomes);
     state.gpa.free(job.units);
     state.gpa.destroy(job);
     state.job = null;
