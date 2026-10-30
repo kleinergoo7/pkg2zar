@@ -13,7 +13,7 @@ fn onProgress(_: ?*anyopaque, progress: p2z.exporter.Progress) void {
     const percent = if (progress.total == 0) 0 else progress.done * 100 / progress.total;
     if (percent == last_percent) return;
     last_percent = percent;
-    std.debug.print("\r{d}%% {d}/{d} bytes  {s}\n", .{ percent, progress.done, progress.total, progress.current });
+    std.debug.print("\r{d}% {d}/{d} bytes  {s}\n", .{ percent, progress.done, progress.total, progress.current });
 }
 
 pub fn main(init: std.process.Init) !void {
