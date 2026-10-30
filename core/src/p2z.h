@@ -34,8 +34,10 @@ uint32_t p2z_abi_version(void);
 void p2z_cancel(void);
 
 /* Runs one convert or merge job. Blocks until done.
- * Returns P2Z_OK, P2Z_ERROR or P2Z_CANCELLED; on error `err` receives a
- * user-facing message. Call from a worker thread. */
+ * Returns P2Z_OK, P2Z_ERROR or P2Z_CANCELLED. On error `err` receives a
+ * user-facing message; on success it may hold a note (for example that the
+ * inputs were swapped because the update was listed first).
+ * Call from a worker thread. */
 int p2z_run(int mode, int allow_overwrite, const char *output, const char *const *inputs,
             size_t input_count, p2z_progress_fn on_progress, void *ctx, char *err,
             size_t err_len);

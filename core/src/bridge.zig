@@ -130,8 +130,17 @@ export fn p2z_run(
         }
     }
 
-    const base_identity = plan_mod.Identity.fromSource(&sources[0]);
-    const update_identity = if (source_count == 2) plan_mod.Identity.fromSource(&sources[1]) else null;
+    var base_identity = plan_mod.Identity.fromSource(&sources[0]);
+    var update_identity = if (source_count == 2) plan_mod.Identity.fromSource(&sources[1]) else null;
+    var swapped = false;
+    if (update_identity) |upd| {
+        if (plan_mod.shouldSwapRoles(base_identity, upd)) {
+            std.mem.swap(source.Source, &sources[0], &sources[1]);
+            base_identity = upd;
+            update_identity = plan_mod.Identity.fromSource(&sources[1]);
+            swapped = true;
+        }
+    }
     if (plan_mod.preflight(base_identity, update_identity)) |failure| {
         var buf: [512]u8 = undefined;
         writeMessage(err, err_len, plan_mod.describe(failure, &buf));
@@ -164,6 +173,9 @@ export fn p2z_run(
     };
 
     _ = stats;
+    if (swapped) {
+        writeMessage(err, err_len, "note: inputs were swapped, the update was listed first");
+    }
     return 0;
 }
 
@@ -208,4 +220,28 @@ fn exists(path: []const u8) bool {
     const file = std.Io.Dir.cwd().openFile(std.testing.io, path, .{}) catch return false;
     file.close(std.testing.io);
     return true;
+}
+
+test "integration: merge accepts the update listed first" {
+    const base_path = if (std.c.getenv("P2Z_TEST_PKG")) |p| std.mem.span(p) else return error.SkipZigTest;
+    const update_path = if (std.c.getenv("P2Z_TEST_UPDATE")) |p| std.mem.span(p) else return error.SkipZigTest;
+
+    const output = ".zig-cache/p2z-bridge-swap.zar";
+    std.Io.Dir.cwd().deleteFile(std.testing.io, output) catch {};
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, output) catch {};
+
+    const output_z = try std.testing.allocator.dupeZ(u8, output);
+    defer std.testing.allocator.free(output_z);
+    const update_z = try std.testing.allocator.dupeZ(u8, update_path);
+    defer std.testing.allocator.free(update_z);
+    const base_z = try std.testing.allocator.dupeZ(u8, base_path);
+    defer std.testing.allocator.free(base_z);
+
+    // Update first on purpose: the roles must be detected, not taken from the order.
+    const inputs = [_][*:0]const u8{ update_z.ptr, base_z.ptr };
+    var err: [256]u8 = [_]u8{0} ** 256;
+    const code = p2z_run(@intFromEnum(Mode.auto), 0, output_z.ptr, &inputs, 2, null, null, &err, err.len);
+    try std.testing.expectEqual(@as(c_int, 0), code);
+    try std.testing.expect(std.mem.indexOf(u8, &err, "swapped") != null);
+    try std.testing.expect(exists(output));
 }

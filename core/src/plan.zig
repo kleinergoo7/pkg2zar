@@ -83,6 +83,12 @@ pub const Identity = struct {
     }
 };
 
+/// True when the two inputs are listed update-first. Roles are semantic, not positional, so
+/// callers may swap and continue.
+pub fn shouldSwapRoles(base: Identity, update: Identity) bool {
+    return pkg.isPatch(base.content_flags) and !pkg.isPatch(update.content_flags);
+}
+
 /// Refuses inputs that cannot be merged or converted. `update` is null for a single pkg.
 pub fn preflight(base: Identity, update: ?Identity) ?Failure {
     if (pkg.isDeltaPatch(base.content_flags)) return .{ .delta_patch = .{ .path = base.path } };
@@ -215,6 +221,15 @@ fn lower(arena: std.mem.Allocator, text: []const u8) ![]const u8 {
     const out = try arena.alloc(u8, text.len);
     for (text, 0..) |c, i| out[i] = std.ascii.toLower(c);
     return out;
+}
+
+test "shouldSwapRoles: detects an update listed first" {
+    const base = makeIdentity("UP4040-CUSA00740_00-TERRARIA00000001", 0x0A000000);
+    const patch = makeIdentity("UP4040-CUSA00740_00-TERRARIA00000001", 0x62300000);
+    try std.testing.expect(!shouldSwapRoles(base, patch));
+    try std.testing.expect(shouldSwapRoles(patch, base));
+    try std.testing.expect(!shouldSwapRoles(base, base));
+    try std.testing.expect(!shouldSwapRoles(patch, patch));
 }
 
 test "preflight: accepts the real base and update" {

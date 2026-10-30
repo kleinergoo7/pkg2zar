@@ -415,6 +415,9 @@ void MainWindow::poll() {
     switch (result_.load()) {
     case P2Z_OK:
         log(QStringLiteral("Done: %1").arg(output_->text()));
+        if (error_[0] != 0) {
+            log(QString::fromUtf8(error_.data()));
+        }
         break;
     case P2Z_CANCELLED:
         log(QStringLiteral("Cancelled. No archive written."));
@@ -523,6 +526,10 @@ static int runUiSelfTest(int argc, char **argv) {
             require(log.contains(QStringLiteral("Cancelled")), QStringLiteral("log has no Cancelled line"));
             require(!QFileInfo::exists(output), QStringLiteral("archive exists after cancel"));
             require(!QFileInfo::exists(part), QStringLiteral(".part exists after cancel"));
+        } else if (mode == "swap") {
+            require(log.contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
+            require(log.contains(QStringLiteral("swapped")), QStringLiteral("log has no swap note"));
+            require(QFileInfo::exists(output), QStringLiteral("archive missing"));
         } else if (mode == "separate") {
             require(window.testLog().contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
             for (const QString &input : inputs) {

@@ -47,7 +47,10 @@ QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest convert out.zar base
 QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest cancel  out.zar base.pkg update.pkg
 ```
 
-Modes: `convert`, `merge`, `cancel`, `separate`. It exits 0 on pass and prints the log on failure.
+Modes: `convert`, `merge`, `swap`, `cancel`, `separate`. It exits 0 on pass and prints the log on failure.
+
+Merge detects roles by content, not by list order: listing the update first swaps the two and
+logs a note.
 
 ## Layout
 

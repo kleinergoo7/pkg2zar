@@ -44,8 +44,16 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    const base_identity = p2z.plan.Identity.fromSource(&sources[0]);
-    const update_identity = if (count == 2) p2z.plan.Identity.fromSource(&sources[1]) else null;
+    var base_identity = p2z.plan.Identity.fromSource(&sources[0]);
+    var update_identity = if (count == 2) p2z.plan.Identity.fromSource(&sources[1]) else null;
+    if (update_identity) |upd| {
+        if (p2z.plan.shouldSwapRoles(base_identity, upd)) {
+            std.mem.swap(p2z.source.Source, &sources[0], &sources[1]);
+            base_identity = upd;
+            update_identity = p2z.plan.Identity.fromSource(&sources[1]);
+            std.debug.print("note: inputs were swapped, the update was listed first\n", .{});
+        }
+    }
     if (p2z.plan.preflight(base_identity, update_identity)) |failure| {
         var buf: [512]u8 = undefined;
         std.process.fatal("{s}", .{p2z.plan.describe(failure, &buf)});
