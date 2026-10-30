@@ -89,17 +89,20 @@ pub fn run(
         if (options.cancel.load(.acquire)) return error.Cancelled;
         report(options, done, totals.bytes, item.path);
 
+        // Windows hands back backslash paths; the archive stores components only, and the
+        // verification below compares against what was written, so normalise once here.
+        const rel = try archivePath(arena, item.path);
         switch (item.kind) {
             .directory => {
-                writer.makeDir(item.path) catch |err| return writerError(err);
-                try pushExpectation(arena, &expected, item.path, 0, true);
+                writer.makeDir(rel) catch |err| return writerError(err);
+                try pushExpectation(arena, &expected, rel, 0, true);
             },
             .file => {
                 const src = item.dir.openFile(io, item.basename, .{}) catch return error.ReadFailed;
                 defer src.close(io);
                 const size = src.length(io) catch return error.ReadFailed;
 
-                writer.startFile(item.path) catch |err| return writerError(err);
+                writer.startFile(rel) catch |err| return writerError(err);
                 var offset: u64 = 0;
                 while (offset < size) {
                     if (options.cancel.load(.acquire)) return error.Cancelled;
@@ -112,7 +115,7 @@ pub fn run(
                     done += take;
                     report(options, done, totals.bytes, item.path);
                 }
-                try pushExpectation(arena, &expected, item.path, size, false);
+                try pushExpectation(arena, &expected, rel, size, false);
             },
             else => {
                 std.debug.print("folder: {s} is not a regular file or directory\n", .{item.path});
@@ -159,6 +162,12 @@ fn scan(arena: std.mem.Allocator, io: std.Io, root: std.Io.Dir) Error!Totals {
         }
     }
     return totals;
+}
+
+fn archivePath(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
+    const copy = arena.dupe(u8, path) catch return error.OutOfMemory;
+    _ = std.mem.replaceScalar(u8, copy, '\\', '/');
+    return copy;
 }
 
 const Expected = struct { path: []const u8, size: u64, is_dir: bool };
@@ -244,6 +253,14 @@ fn makeTree(arena: std.mem.Allocator, io: std.Io) ![]const u8 {
     for (big, 0..) |*byte, i| byte.* = @truncate(i * 7 + 3);
     try writeFile(io, root ++ "/sub/deep/c.bin", big);
     return root;
+}
+
+test "folder: archive paths use forward slashes on every platform" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try std.testing.expectEqualStrings("sub/b.bin", try archivePath(arena, "sub\\b.bin"));
+    try std.testing.expectEqualStrings("sub/b.bin", try archivePath(arena, "sub/b.bin"));
 }
 
 test "folder: archives a tree and verifies the result" {
