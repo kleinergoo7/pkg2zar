@@ -22,3 +22,8 @@ pub const probe = @import("probe.zig");
 test {
     std.testing.refAllDecls(@This());
 }
+
+test {
+    // Synthetic fixtures: compiled for tests only, never into the library.
+    _ = @import("test_pkg.zig");
+}

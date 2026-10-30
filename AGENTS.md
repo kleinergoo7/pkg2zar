@@ -54,6 +54,8 @@ Silence is worse than a crash, because it produces a wrong archive that looks va
 - Test names state the behavior: `test "merge: update entry replaces base entry case-insensitively"`.
 - Assert concrete values, not truthiness: magic bytes, entry counts, byte totals, hashes.
 - A test that passes without the fixture present is not evidence. Say which fixture it needed.
+- CI has no ROM: `core/src/test_pkg.zig` builds a synthetic pkg so plan, export and extract run
+  there. Keep it valid when the format handling changes.
 
 ## 5. Format code and untrusted input
 

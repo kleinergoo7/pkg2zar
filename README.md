@@ -44,16 +44,9 @@ zig-out/bin/extract out-dir base.pkg [update.pkg]
 zig-out/bin/plan  base.pkg [update.pkg]     # preflight and merge plan, writes nothing
 zig-out/bin/listfiles base.pkg [piece...]   # file tree of a pkg or piece set
 zig-out/bin/pkginfo base.pkg                # header fields
+zig-out/bin/zar list out.zar                # tree inside a written archive
+zig-out/bin/zar extract dir out.zar         # write it back out, refuses to overwrite
 ```
-
-An offscreen UI self-test drives the real widgets:
-
-```sh
-QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest convert out.zar base.pkg
-QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest cancel  out.zar base.pkg update.pkg
-```
-
-Modes: `convert`, `merge`, `swap`, `cancel`, `separate`, `extract`, `name`, `name-merged`. It exits 0 on pass and prints the log on failure.
 
 Merge detects roles by content, not by list order: listing the update first swaps the two and
 logs a note.
@@ -70,8 +63,9 @@ logs a note.
 - PlayGo state is not modelled. A finished `.zar` is a fully installed game, so
   `sce_sys/playgo-chunk.dat` is copied as an ordinary file.
 - Delta updates, retail PSN passcodes, and DLC install layout are refused, not handled.
-- Test fixtures are not committed. Point `P2Z_TEST_ROM` at a directory of `.pkg` files to run
-  real-data tests.
+- Test fixtures are not committed. The unit tests build their own pkg (header, key blobs, PFSC
+  tree, param.sfo) and convert it end to end, so CI covers the real path. Point `P2Z_TEST_ROM`
+  at a directory of `.pkg` files to run the fixture tests as well.
 
 ## License
 
