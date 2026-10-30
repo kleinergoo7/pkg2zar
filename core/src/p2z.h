@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 /* Must match ABI_VERSION in core/src/bridge.zig. */
-#define P2Z_ABI_VERSION 4u
+#define P2Z_ABI_VERSION 5u
 
 #define P2Z_OK 0
 #define P2Z_ERROR 1
@@ -23,6 +23,10 @@ extern "C" {
 #define P2Z_MODE_AUTO 0   /* piece set by name, else 1 input converts, 2 merge */
 #define P2Z_MODE_MERGE 1  /* force base + update */
 #define P2Z_MODE_SINGLE 2 /* every input is one piece set */
+
+/* Output kind for p2z_run. */
+#define P2Z_KIND_ARCHIVE 0 /* write out.zar */
+#define P2Z_KIND_EXTRACT 1 /* extract into out/ */
 
 /* `current` is the entry being written; it is not NUL-terminated. */
 typedef void (*p2z_progress_fn)(void *ctx, uint64_t done, uint64_t total,
@@ -38,9 +42,9 @@ void p2z_cancel(void);
  * user-facing message; on success it may hold a note (for example that the
  * inputs were swapped because the update was listed first).
  * Call from a worker thread. */
-int p2z_run(int mode, int allow_overwrite, const char *output, const char *const *inputs,
-            size_t input_count, p2z_progress_fn on_progress, void *ctx, char *err,
-            size_t err_len);
+int p2z_run(int mode, int kind, int allow_overwrite, const char *output,
+            const char *const *inputs, size_t input_count, p2z_progress_fn on_progress,
+            void *ctx, char *err, size_t err_len);
 
 #ifdef __cplusplus
 }

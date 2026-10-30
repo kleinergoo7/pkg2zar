@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
@@ -31,6 +32,8 @@
 #include <vector>
 
 #include "p2z.h"
+
+static std::string siblingPath(const std::string &output, const std::string &input, bool extract);
 
 struct ProgressState {
     std::atomic<uint64_t> done{0};
@@ -61,6 +64,7 @@ public:
     void testSetInputs(const QStringList &paths) { addInputs(paths); }
     void testSetOutput(const QString &path) { output_->setText(path); }
     void testSetSeparate(bool on) { separateBox_->setChecked(on); }
+    void testSetKind(bool extract) { kindBox_->setCurrentIndex(extract ? 1 : 0); }
     void testClickConvert() { convertButton_->click(); }
     void testClickCancel() { cancelButton_->click(); }
     bool testBusy() const { return running_.load(); }
@@ -74,12 +78,12 @@ private:
     void addInputs(const QStringList &paths);
     void pickInputs();
     void pickOutput();
+    bool extractMode() const;
     void start();
     void cancel();
     void poll();
     void log(const QString &line);
     void logFromWorker(const QString &line);
-    static std::string siblingArchive(const std::string &output, const std::string &input);
     void setBusy(bool busy);
     void updateOutputDefault();
 
@@ -90,6 +94,7 @@ private:
     QPushButton *convertButton_;
     QPushButton *cancelButton_;
     QCheckBox *separateBox_;
+    QComboBox *kindBox_;
     QProgressBar *progress_;
     QLabel *currentFile_;
     QPlainTextEdit *log_;
@@ -126,6 +131,10 @@ MainWindow::MainWindow() {
 
     auto *outputRow = new QHBoxLayout();
     outputRow->addWidget(new QLabel(QStringLiteral("Output:")));
+    kindBox_ = new QComboBox(central);
+    kindBox_->addItem(QStringLiteral("Archive (.zar)"));
+    kindBox_->addItem(QStringLiteral("Extract to folder"));
+    outputRow->addWidget(kindBox_);
     output_ = new QLineEdit(central);
     browseButton_ = new QPushButton(QStringLiteral("Browse..."), central);
     outputRow->addWidget(output_, 1);
@@ -226,10 +235,16 @@ void MainWindow::pickInputs() {
     addInputs(paths);
 }
 
+bool MainWindow::extractMode() const {
+    return kindBox_->currentIndex() == 1;
+}
+
 void MainWindow::pickOutput() {
-    const QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Save archive"), output_->text(),
-        QStringLiteral("shadPS4 archives (*.zar)"));
+    const QString path =
+        extractMode() ? QFileDialog::getExistingDirectory(this, QStringLiteral("Choose output folder"),
+                                                          output_->text())
+                      : QFileDialog::getSaveFileName(this, QStringLiteral("Save archive"), output_->text(),
+                                                     QStringLiteral("shadPS4 archives (*.zar)"));
     if (!path.isEmpty()) {
         output_->setText(path);
     }
@@ -240,7 +255,8 @@ void MainWindow::updateOutputDefault() {
         return;
     }
     QFileInfo info(inputs_->item(0)->text());
-    output_->setText(info.absolutePath() + "/" + info.completeBaseName() + ".zar");
+    const QString suffix = extractMode() ? QString() : QStringLiteral(".zar");
+    output_->setText(info.absolutePath() + "/" + info.completeBaseName() + suffix);
 }
 
 void MainWindow::setBusy(bool busy) {
@@ -278,12 +294,14 @@ void MainWindow::start() {
     }
     const std::string outputUtf8 = output.toStdString();
     const bool separate = separateBox_->isChecked() && owned.size() > 1;
+    const bool extract = extractMode();
+    const int kind = extract ? P2Z_KIND_EXTRACT : P2Z_KIND_ARCHIVE;
 
     // Ask before replacing anything; the core renames over the old file only after verify.
     std::vector<std::string> targets;
     if (separate) {
         for (const std::string &input : owned) {
-            targets.push_back(siblingArchive(outputUtf8, input));
+            targets.push_back(siblingPath(outputUtf8, input, extract));
         }
     } else {
         targets.push_back(outputUtf8);
@@ -296,11 +314,12 @@ void MainWindow::start() {
         }
     }
     if (existing > 0) {
+        const QString noun = extract ? QStringLiteral("folder") : QStringLiteral("file");
         const QString text =
             existing == 1
-                ? QStringLiteral("The output file already exists:\n%1\n\nReplace it?")
-                      .arg(QString::fromStdString(targets.back()))
-                : QStringLiteral("%1 output files already exist. Replace them?").arg(existing);
+                ? QStringLiteral("The output %1 already exists:\n%2\n\nReplace it?")
+                      .arg(noun, QString::fromStdString(targets.back()))
+                : QStringLiteral("%1 output %2s already exist. Replace them?").arg(existing).arg(noun);
         const auto answer = QMessageBox::question(this, QStringLiteral("Replace existing archive"), text,
                                                   QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
                                                   QMessageBox::No);
@@ -328,17 +347,17 @@ void MainWindow::start() {
     log(separate ? QStringLiteral("Starting separate conversion of %1 files...").arg(owned.size())
                  : QStringLiteral("Starting %1...").arg(owned.size() == 2 ? "merge" : "convert"));
 
-    worker_ = std::thread([this, owned, outputUtf8, separate, overwrite] {
+    worker_ = std::thread([this, owned, outputUtf8, separate, overwrite, kind] {
         int code = P2Z_OK;
         if (separate) {
             for (const std::string &input : owned) {
-                std::string out = siblingArchive(outputUtf8, input);
+                std::string out = siblingPath(outputUtf8, input, extractMode());
                 std::vector<const char *> pointers{input.c_str()};
                 logFromWorker(QStringLiteral("Converting %1 -> %2")
                                   .arg(QString::fromStdString(input), QString::fromStdString(out)));
                 progressState_.done.store(0);
                 progressState_.total.store(0);
-                code = p2z_run(P2Z_MODE_SINGLE, overwrite ? 1 : 0, out.c_str(), pointers.data(), 1,
+                code = p2z_run(P2Z_MODE_SINGLE, kind, overwrite ? 1 : 0, out.c_str(), pointers.data(), 1,
                                progressCallback, &progressState_, error_.data(), error_.size());
                 if (code != P2Z_OK) {
                     break;
@@ -350,7 +369,7 @@ void MainWindow::start() {
             for (const std::string &path : owned) {
                 pointers.push_back(path.c_str());
             }
-            code = p2z_run(P2Z_MODE_AUTO, overwrite ? 1 : 0, outputUtf8.c_str(), pointers.data(),
+            code = p2z_run(P2Z_MODE_AUTO, kind, overwrite ? 1 : 0, outputUtf8.c_str(), pointers.data(),
                            owned.size(), progressCallback, &progressState_, error_.data(),
                            error_.size());
         }
@@ -362,23 +381,6 @@ void MainWindow::start() {
 /* Writes to the log from the worker thread through a queued call. */
 void MainWindow::logFromWorker(const QString &line) {
     QMetaObject::invokeMethod(this, [this, line] { log(line); }, Qt::QueuedConnection);
-}
-
-/* Derives `dir/<input base name>.zar` from the chosen output directory. */
-std::string MainWindow::siblingArchive(const std::string &output, const std::string &input) {
-    std::string dir = output;
-    const size_t slash = dir.find_last_of("/\\");
-    dir = slash == std::string::npos ? std::string() : dir.substr(0, slash + 1);
-    std::string name = input;
-    const size_t islash = name.find_last_of("/\\");
-    if (islash != std::string::npos) {
-        name = name.substr(islash + 1);
-    }
-    const size_t dot = name.find_last_of('.');
-    if (dot != std::string::npos) {
-        name = name.substr(0, dot);
-    }
-    return dir + name + ".zar";
 }
 
 void MainWindow::cancel() {
@@ -434,7 +436,7 @@ void MainWindow::log(const QString &line) {
 }
 
 /* Headless path used by the build gate: `ps4-pkg2zar --run out.zar in.pkg [update.pkg]`. */
-static std::string siblingArchive(const std::string &output, const std::string &input) {
+static std::string siblingPath(const std::string &output, const std::string &input, bool extract) {
     std::string dir = output;
     const size_t slash = dir.find_last_of("/\\");
     dir = slash == std::string::npos ? std::string() : dir.substr(0, slash + 1);
@@ -447,7 +449,7 @@ static std::string siblingArchive(const std::string &output, const std::string &
     if (dot != std::string::npos) {
         name = name.substr(0, dot);
     }
-    return dir + name + ".zar";
+    return dir + name + (extract ? "" : ".zar");
 }
 
 static int runHeadless(bool separate, int argc, char **argv) {
@@ -462,19 +464,19 @@ static int runHeadless(bool separate, int argc, char **argv) {
             pointers.push_back(path.c_str());
         }
         char err[512] = {0};
-        const int code = p2z_run(P2Z_MODE_AUTO, 0, output.c_str(), pointers.data(), pointers.size(),
-                                 nullptr, nullptr, err, sizeof(err));
+        const int code = p2z_run(P2Z_MODE_AUTO, P2Z_KIND_ARCHIVE, 0, output.c_str(), pointers.data(),
+                                 pointers.size(), nullptr, nullptr, err, sizeof(err));
         if (code != P2Z_OK) {
             std::fprintf(stderr, "%s\n", err);
         }
         return code;
     }
     for (const std::string &input : owned) {
-        const std::string out = siblingArchive(output, input);
+        const std::string out = siblingPath(output, input, false);
         const char *pointer = input.c_str();
         char err[512] = {0};
-        const int code = p2z_run(P2Z_MODE_SINGLE, 0, out.c_str(), &pointer, 1, nullptr, nullptr, err,
-                                 sizeof(err));
+        const int code = p2z_run(P2Z_MODE_SINGLE, P2Z_KIND_ARCHIVE, 0, out.c_str(), &pointer, 1, nullptr,
+                                 nullptr, err, sizeof(err));
         if (code != P2Z_OK) {
             std::fprintf(stderr, "%s: %s\n", input.c_str(), err);
             return code;
@@ -507,6 +509,9 @@ static int runUiSelfTest(int argc, char **argv) {
     window.testSetInputs(inputs);
     window.testSetOutput(output);
     window.testSetSeparate(mode == "separate");
+    if (mode == "extract") {
+        window.testSetKind(true);
+    }
 
     QElapsedTimer clock;
     clock.start();
@@ -530,11 +535,16 @@ static int runUiSelfTest(int argc, char **argv) {
             require(log.contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
             require(log.contains(QStringLiteral("swapped")), QStringLiteral("log has no swap note"));
             require(QFileInfo::exists(output), QStringLiteral("archive missing"));
+        } else if (mode == "extract") {
+            require(log.contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
+            require(QFileInfo(output).isDir(), QStringLiteral("output folder missing"));
+            require(QFileInfo::exists(output + QStringLiteral("/eboot.bin")), QStringLiteral("eboot.bin missing"));
+            require(!QFileInfo::exists(part), QStringLiteral(".part left behind"));
         } else if (mode == "separate") {
             require(window.testLog().contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
             for (const QString &input : inputs) {
                 const QString derived =
-                    QString::fromStdString(siblingArchive(output.toStdString(), input.toStdString()));
+                    QString::fromStdString(siblingPath(output.toStdString(), input.toStdString(), mode == "extract"));
                 require(QFileInfo::exists(derived), QStringLiteral("derived archive missing: ") + derived);
             }
         } else {

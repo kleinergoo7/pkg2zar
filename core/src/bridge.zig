@@ -7,9 +7,10 @@ const std = @import("std");
 const source = @import("source.zig");
 const plan_mod = @import("plan.zig");
 const exporter = @import("export.zig");
+const extractor = @import("extract.zig");
 const pieces = @import("pieces.zig");
 
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 pub const ProgressFn = *const fn (ctx: ?*anyopaque, done: u64, total: u64, current: [*]const u8, current_len: usize) callconv(.c) void;
 
@@ -38,10 +39,17 @@ pub const Mode = enum(c_int) {
     single = 2,
 };
 
+/// Output kind: a `.zar` archive, or an extracted folder tree.
+pub const Kind = enum(c_int) {
+    archive = 0,
+    extract = 1,
+};
+
 /// Runs one convert or merge job. Returns 0 on success, 2 when cancelled, 1 on any error with
 /// a user-facing message in `err`.
 export fn p2z_run(
     mode: c_int,
+    kind: c_int,
     allow_overwrite: c_int,
     output: [*:0]const u8,
     inputs: [*]const [*:0]const u8,
@@ -152,31 +160,45 @@ export fn p2z_run(
         return 1;
     };
 
-    const stats = exporter.run(arena, io, sources[0..source_count], &plan, .{
-        .output = std.mem.span(output),
-        .overwrite = allow_overwrite != 0,
-        .cancel = &cancel_flag,
-        .on_progress = report,
-    }) catch |failure| switch (failure) {
-        error.OutOfMemory => {
-            writeMessage(err, err_len, "out of memory");
-            return 1;
-        },
-        error.Cancelled => {
-            writeMessage(err, err_len, exporter.reasonName(error.Cancelled));
-            return 2;
-        },
-        else => |e| {
-            writeMessage(err, err_len, exporter.reasonName(e));
-            return 1;
-        },
+    const out_kind = std.enums.fromInt(Kind, kind) orelse {
+        writeMessage(err, err_len, "unknown output kind");
+        return 1;
     };
-
-    _ = stats;
+    switch (out_kind) {
+        .archive => {
+            _ = exporter.run(arena, io, sources[0..source_count], &plan, .{
+                .output = std.mem.span(output),
+                .overwrite = allow_overwrite != 0,
+                .cancel = &cancel_flag,
+                .on_progress = report,
+            }) catch |failure| return failureCode(err, err_len, failure, exporter.reasonName);
+        },
+        .extract => {
+            _ = extractor.run(arena, io, sources[0..source_count], &plan, .{
+                .output = std.mem.span(output),
+                .overwrite = allow_overwrite != 0,
+                .cancel = &cancel_flag,
+                .on_progress = report,
+            }) catch |failure| return failureCode(err, err_len, failure, extractor.reasonName);
+        },
+    }
     if (swapped) {
         writeMessage(err, err_len, "note: inputs were swapped, the update was listed first");
     }
     return 0;
+}
+
+fn failureCode(buffer: [*]u8, len: usize, failure: anyerror, comptime reasonName: anytype) c_int {
+    if (failure == error.OutOfMemory) {
+        writeMessage(buffer, len, "out of memory");
+        return 1;
+    }
+    if (failure == error.Cancelled) {
+        writeMessage(buffer, len, reasonName(error.Cancelled));
+        return 2;
+    }
+    writeMessage(buffer, len, reasonName(@errorCast(failure)));
+    return 1;
 }
 
 fn writeMessage(buffer: [*]u8, len: usize, message: []const u8) void {
@@ -203,7 +225,7 @@ test "integration: p2z_run converts through the C ABI" {
     var err: [256]u8 = undefined;
     TestProgress.last_done = 0;
 
-    const code = p2z_run(@intFromEnum(Mode.single), 0, output_z.ptr, &inputs, 1, TestProgress.cb, null, &err, err.len);
+    const code = p2z_run(@intFromEnum(Mode.single), @intFromEnum(Kind.archive), 0, output_z.ptr, &inputs, 1, TestProgress.cb, null, &err, err.len);
     try std.testing.expectEqual(@as(c_int, 0), code);
     try std.testing.expect(TestProgress.last_done > 0);
     try std.testing.expect(exists(output));
@@ -240,7 +262,7 @@ test "integration: merge accepts the update listed first" {
     // Update first on purpose: the roles must be detected, not taken from the order.
     const inputs = [_][*:0]const u8{ update_z.ptr, base_z.ptr };
     var err: [256]u8 = [_]u8{0} ** 256;
-    const code = p2z_run(@intFromEnum(Mode.auto), 0, output_z.ptr, &inputs, 2, null, null, &err, err.len);
+    const code = p2z_run(@intFromEnum(Mode.auto), @intFromEnum(Kind.archive), 0, output_z.ptr, &inputs, 2, null, null, &err, err.len);
     try std.testing.expectEqual(@as(c_int, 0), code);
     try std.testing.expect(std.mem.indexOf(u8, &err, "swapped") != null);
     try std.testing.expect(exists(output));

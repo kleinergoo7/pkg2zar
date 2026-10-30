@@ -26,13 +26,15 @@ zig build test
 
 ## Usage
 
-GUI: drop one pkg (convert) or two (merge, base then update), pick the output, press Convert.
-Cancel leaves no file behind.
+GUI: drop one pkg (convert) or two (merge, roles detected automatically), choose Archive or
+Extract, pick the output, press Convert. Cancel leaves nothing behind. Extract writes into
+`<out>.part` and replaces the destination only after every file is size-checked.
 
 Headless, same code path as the GUI button:
 
 ```sh
 zig-out/bin/export out.zar base.pkg [update.pkg]
+zig-out/bin/extract out-dir base.pkg [update.pkg]
 zig-out/bin/plan  base.pkg [update.pkg]     # preflight and merge plan, writes nothing
 zig-out/bin/listfiles base.pkg [piece...]   # file tree of a pkg or piece set
 zig-out/bin/pkginfo base.pkg                # header fields
@@ -47,7 +49,7 @@ QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest convert out.zar base
 QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest cancel  out.zar base.pkg update.pkg
 ```
 
-Modes: `convert`, `merge`, `swap`, `cancel`, `separate`. It exits 0 on pass and prints the log on failure.
+Modes: `convert`, `merge`, `swap`, `cancel`, `separate`, `extract`. It exits 0 on pass and prints the log on failure.
 
 Merge detects roles by content, not by list order: listing the update first swaps the two and
 logs a note.
