@@ -30,25 +30,3 @@ the buffer are read and decrypted. Those 4 plaintext bytes therefore depend on h
   `general_digests`, `image_key`, `metas`); they are not installed game content.
 - `npbind.dat`, `license.dat`, `license.info`, `nptitle.dat` are stored encrypted in the pkg
   (entries `0x400`-`0x403`) and are decrypted on the way out, matching `ps4-pkg-tools`.
-
-## Boot test
-
-`tools/boot-test.sh` runs shadPS4 fullscreen on the desktop Wayland session, captures the
-screen with Spectacle at ~20 s and requires: `Game id` in the log, at least one
-`UpdatePlayTime` tick, no critical line, and a non-blank screenshot.
-
-Result on the fixtures:
-
-```
-Terraria merged-zar   PASS   screenshot mean 0.319 std 0.086
-Terraria merged-dir   PASS   screenshot mean 0.341 std 0.078
-Minecraft merged-zar  PASS   mean 0.329 std 0.091, one background-thread critical (NetherNet)
-```
-
-The harness fails on a critical line only when it happens before the game loop starts. Minecraft
-crashes shadPS4's NetherNet LAN thread after the first frame and keeps rendering; that is
-reported as a warning, not a pass for a dead process.
-
-Weston's headless backend was tried first and cannot be used: every shadPS4 SDL instance
-fails with `ErrorSurfaceLostKHR` in `FindPresentFormat`, fullscreen or not, on a persistent
-compositor. The desktop session works.

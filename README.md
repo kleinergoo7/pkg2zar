@@ -16,10 +16,15 @@ zig build
 ./zig-out/bin/ps4-pkg2zar
 ```
 
-One command builds the core, the tools and the UI: `zig build`. `zig build run` starts the app,
-`zig build test` runs the unit tests.
+One command builds the core, the tools and the UI. The build is Zig only.
 
-Zig only:
+```sh
+zig build             # debug binaries in zig-out/bin
+zig build run         # start the app
+zig build test        # unit tests
+zig build check       # formatting check on the Zig sources
+zig build --release=safe   # binaries for distribution
+```
 
 Zig must be 0.17.0. If another version comes first on `PATH`, put 0.17 first.
 
@@ -53,22 +58,11 @@ Modes: `convert`, `merge`, `swap`, `cancel`, `separate`, `extract`, `name`, `nam
 Merge detects roles by content, not by list order: listing the update first swaps the two and
 logs a note.
 
-## Boot test
-
-`tools/boot-test.sh` boots the produced output in shadPS4 and fails unless the game really starts:
-Weston headless compositor, a screenshot at ~35 s with real pixels, two play-time ticks, no
-critical error. Not part of `zig build test`.
-
-```sh
-P2Z_TEST_PKG=base.pkg P2Z_TEST_UPDATE=update.pkg tools/boot-test.sh
-P2Z_SHADPS4=/path/to/shadps4 tools/boot-test.sh --case merged-zar
-```
-
 ## Layout
 
-- `core/src/` — Zig core, built as a static library behind a C ABI (`p2z.h`)
+- `core/src/` — Zig core, built as a static library behind a C ABI (`core/src/bridge.zig`)
 - `ui/main.zig` — dvui front end (SDL3 backend); all work runs through `core/src/bridge.zig`
-- `tools/` — pkginfo, listfiles, plan, export
+- `tools/` — pkginfo, listfiles, plan, export, extract
 - `docs/debt.md` — running debt ledger
 
 ## Notes

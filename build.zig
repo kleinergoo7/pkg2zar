@@ -68,4 +68,11 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = core });
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "Run unit tests").dependOn(&run_tests.step);
+
+    // zig-pkg/ holds fetched dependencies; formatting them is not our business.
+    const fmt = b.addFmt(.{
+        .paths = &.{ b.path("build.zig"), b.path("core"), b.path("tools"), b.path("ui") },
+        .check = true,
+    });
+    b.step("check", "Check formatting of the Zig sources").dependOn(&fmt.step);
 }

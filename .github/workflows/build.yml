@@ -11,14 +11,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Keep the global cache out of the checkout; setup-zig points both caches at one
+      # directory otherwise, which made cache writes fail.
+      ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-global
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-      - name: Separate Zig caches
-        shell: bash
-        run: echo "ZIG_GLOBAL_CACHE_DIR=$RUNNER_TEMP/zig-global" >> "$GITHUB_ENV"
       - name: Linux windowing headers for SDL
         if: runner.os == 'Linux'
         run: |
@@ -26,8 +27,10 @@ jobs:
           sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxi-dev libxinerama-dev libxfixes-dev libwayland-dev libxkbcommon-dev \
             libgl1-mesa-dev libasound2-dev libudev-dev pkg-config
+      - name: Check formatting
+        run: zig build check
       - name: Build
-        run: zig build -Doptimize=ReleaseSafe
+        run: zig build --release=safe
       - name: Test
         run: zig build test
       - name: Upload binaries

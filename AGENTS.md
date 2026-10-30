@@ -6,7 +6,8 @@ file, then `docs/`.
 ## 1. Build and verify
 
 - Build: `zig build && zig build test`. Everything, including the UI, is one Zig build.
-- Run `zig fmt .` before `zig build` after every Zig change.
+- Run `zig fmt .` before `zig build` after every Zig change; `zig build check` verifies it.
+- Distribution binaries come from `zig build --release=safe`; CI publishes those as artifacts.
 - Decide success from the process exit status, never from grepping compiler output. This machine
   emits German diagnostics (`Fehler:`), so an `error:` grep reports zero matches on a failed build.
 - After a build that can fail, confirm the binary or library changed (mtime or hash). A stale

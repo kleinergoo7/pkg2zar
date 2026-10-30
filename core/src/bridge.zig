@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ps4-pkg2zar contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! C ABI surface for the Qt shell. One job at a time, no global state beyond the cancel flag.
+//! Job entry points for the UI: exported C functions plus Zig wrappers. One job at a time,
+//! no global state beyond the cancel flag.
 
 const std = @import("std");
 const source = @import("source.zig");
