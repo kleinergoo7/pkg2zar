@@ -22,7 +22,10 @@ pub fn main(init: std.process.Init) !void {
     defer args.deinit();
     _ = args.next();
 
-    const output = args.next() orelse std.process.fatal("usage: export <out.zar> <base.pkg> [update.pkg]", .{});
+    const output = args.next() orelse std.process.fatal(
+        "usage: export <out.zar> <base.pkg> [update.pkg]\n       export <out.zar> <extracted-folder>",
+        .{},
+    );
     var paths: [2][]const u8 = undefined;
     var count: usize = 0;
     while (args.next()) |arg| {
@@ -35,6 +38,15 @@ pub fn main(init: std.process.Init) !void {
     var arena_state = std.heap.ArenaAllocator.init(init.gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+
+    // A single directory is an extracted tree, not a pkg. Anything else goes down the pkg path,
+    // which produces its own precise message when the path is not a pkg.
+    if (count == 1) {
+        if (std.Io.Dir.cwd().openDir(init.io, paths[0], .{})) |dir| {
+            dir.close(init.io);
+            return exportFolder(init, arena, paths[0], output);
+        } else |_| {}
+    }
 
     var sources: [2]p2z.source.Source = undefined;
     var opened: usize = 0;
@@ -75,6 +87,20 @@ pub fn main(init: std.process.Init) !void {
     }) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => |e| std.process.fatal("{s}", .{p2z.exporter.reasonName(e)}),
+    };
+
+    std.debug.print("\r", .{});
+    std.debug.print("wrote {s}: {d} files, {d} dirs, {d} bytes\n", .{ output, stats.files, stats.dirs, stats.bytes });
+}
+
+fn exportFolder(init: std.process.Init, arena: std.mem.Allocator, root: []const u8, output: []const u8) !void {
+    const stats = p2z.folder.run(arena, init.io, root, .{
+        .output = output,
+        .cancel = &cancelled,
+        .on_progress = onProgress,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => |e| std.process.fatal("{s}: {s}", .{ root, p2z.folder.reasonName(e) }),
     };
 
     std.debug.print("\r", .{});

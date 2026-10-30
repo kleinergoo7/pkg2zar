@@ -7,6 +7,7 @@ const std = @import("std");
 const source = @import("source.zig");
 const plan_mod = @import("plan.zig");
 const exporter = @import("export.zig");
+const folder = @import("folder.zig");
 const extractor = @import("extract.zig");
 const pieces = @import("pieces.zig");
 
@@ -179,6 +180,37 @@ pub fn run(
     return .ok;
 }
 
+/// Archives an already extracted folder. Same cancel flag and progress path as `run`.
+pub fn runFolder(
+    allow_overwrite: bool,
+    output: []const u8,
+    root: []const u8,
+    callback: ?ProgressFn,
+    ctx: ?*anyopaque,
+    err: []u8,
+) Outcome {
+    cancel_flag.store(false, .release);
+    progress_fn = callback;
+    progress_ctx = ctx;
+
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+
+    _ = folder.run(arena_state.allocator(), threaded.io(), root, .{
+        .output = output,
+        .overwrite = allow_overwrite,
+        .cancel = &cancel_flag,
+        .on_progress = report,
+    }) catch |failure| {
+        writeMessage(err, folder.reasonName(failure));
+        return if (failure == error.Cancelled) .cancelled else .failed;
+    };
+    return .ok;
+}
+
 fn failureCode(buffer: []u8, failure: anyerror, comptime reasonName: anytype) Outcome {
     if (failure == error.OutOfMemory) {
         writeMessage(buffer, "out of memory");
@@ -229,6 +261,31 @@ fn exists(path: []const u8) bool {
     const file = std.Io.Dir.cwd().openFile(std.testing.io, path, .{}) catch return false;
     file.close(std.testing.io);
     return true;
+}
+
+test "integration: runFolder archives a folder and reports a missing one" {
+    const io = std.testing.io;
+
+    const dir = ".zig-cache/p2z-bridge-folder";
+    const out = ".zig-cache/p2z-bridge-folder.zar";
+    std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
+    std.Io.Dir.cwd().deleteFile(io, out) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, out) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    const src = try std.Io.Dir.cwd().createFile(io, dir ++ "/hello.txt", .{});
+    try src.writeStreamingAll(io, "hello\n");
+    src.close(io);
+
+    var err: [256]u8 = @splat(0);
+    TestProgress.last_done = 0;
+    try std.testing.expectEqual(Outcome.ok, runFolder(false, out, dir, TestProgress.cb, null, &err));
+    try std.testing.expect(exists(out));
+    try std.testing.expect(TestProgress.last_done > 0);
+
+    const missing = runFolder(false, out ++ ".x", ".zig-cache/p2z-bridge-no-folder", null, null, &err);
+    try std.testing.expectEqual(Outcome.failed, missing);
+    try std.testing.expect(std.mem.indexOf(u8, &err, "not a readable directory") != null);
 }
 
 test "integration: merge accepts the update listed first" {

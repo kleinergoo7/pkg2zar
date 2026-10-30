@@ -35,12 +35,15 @@ const Input = struct {
     version: []u8 = &.{},
     patch: bool = false,
     probed: bool = false,
+    /// An already extracted folder: archived as-is, never probed or merged.
+    is_dir: bool = false,
 };
 
 const Unit = struct {
     inputs: [][]u8,
     output: []u8,
     mode: p2z.bridge.Mode,
+    folder: bool = false,
 };
 
 const Job = struct {
@@ -155,6 +158,9 @@ fn header() void {
     if (dvui.button(@src(), "Add files", .{}, .{ .min_size_content = .{ .w = 110, .h = 30 } })) {
         addFilesDialog();
     }
+    if (dvui.button(@src(), "Add folder", .{}, .{ .min_size_content = .{ .w = 110, .h = 30 } })) {
+        addFolderDialog();
+    }
     dvui.label(@src(), "{d} input(s)", .{state.inputs.items.len}, .{});
 
     var list = dvui.scrollArea(@src(), .{}, .{ .expand = .both, .min_size_content = .{ .h = 140 } });
@@ -169,7 +175,9 @@ fn header() void {
             break;
         }
         dvui.label(@src(), "{s}", .{input.path}, .{ .expand = .horizontal });
-        if (input.probed) {
+        if (input.is_dir) {
+            dvui.label(@src(), "(folder)", .{}, .{});
+        } else if (input.probed) {
             dvui.label(@src(), "{s} ({s}) v{s}{s}", .{
                 input.title,
                 input.id,
@@ -252,6 +260,14 @@ fn addFilesDialog() void {
     autoOutput();
 }
 
+fn addFolderDialog() void {
+    const path = dvui.dialogNativeFolderSelect(state.gpa, .{ .title = "Select an extracted folder" }) catch null;
+    const selected = path orelse return;
+    addFolder(selected);
+    state.output_edited = false;
+    autoOutput();
+}
+
 fn browseOutput() void {
     const current = std.mem.trim(u8, state.output.items, " \t\r\n");
     if (state.extract) {
@@ -290,6 +306,19 @@ fn addInput(path: []const u8) void {
     state.inputs.append(state.gpa, input) catch {};
 }
 
+fn addFolder(path: []const u8) void {
+    for (state.inputs.items) |existing| {
+        if (std.mem.eql(u8, existing.path, path)) return;
+    }
+    const input: Input = .{
+        .path = state.gpa.dupe(u8, path) catch return,
+        .is_dir = true,
+        .probed = true,
+    };
+    log("{s}: folder, archived as it is", .{path});
+    state.inputs.append(state.gpa, input) catch {};
+}
+
 fn removeInput(index: usize) void {
     if (busy()) return;
     const input = state.inputs.orderedRemove(index);
@@ -307,8 +336,17 @@ fn roleOf(input: Input, separate: bool, count: usize) p2z.naming.Role {
     return .single;
 }
 
+fn folderBase(path: []const u8) []const u8 {
+    var end = path.len;
+    while (end > 0 and (path[end - 1] == '/' or path[end - 1] == '\\')) end -= 1;
+    return std.fs.path.basename(path[0..end]);
+}
+
 fn derivedName(index: usize) ?[]u8 {
     const input = state.inputs.items[index];
+    if (input.is_dir) {
+        return std.fmt.allocPrint(state.gpa, "{s}.zar", .{folderBase(input.path)}) catch null;
+    }
     if (!input.probed) return null;
     var arena = state.arena_state;
     defer arena.deinit();
@@ -349,6 +387,25 @@ fn startConversion() void {
     if (output.len == 0) {
         log("Choose an output path.", .{});
         return;
+    }
+
+    var folders: usize = 0;
+    for (state.inputs.items) |input| {
+        if (input.is_dir) folders += 1;
+    }
+    if (folders > 0) {
+        if (folders != state.inputs.items.len) {
+            log("Do not mix pkgs and folders; add one kind at a time.", .{});
+            return;
+        }
+        if (state.extract) {
+            log("Extract needs pkg inputs; a folder is already extracted.", .{});
+            return;
+        }
+        if (state.inputs.items.len > 1 and !state.separate) {
+            log("One archive takes one folder; tick Each separately for several.", .{});
+            return;
+        }
     }
 
     const kind: p2z.bridge.Kind = if (state.extract) .extract else .archive;
@@ -413,13 +470,21 @@ fn startConversion() void {
             .inputs = inputs,
             .output = state.gpa.dupe(u8, target) catch return,
             .mode = if (separate) .single else .auto,
+            .folder = state.inputs.items[source_indexes[0]].is_dir,
         };
     }
 
     job.thread = std.Thread.spawn(.{}, worker, .{job}) catch return;
     state.job = job;
     log("Starting {s}{s}...", .{
-        if (state.extract) "extract" else if (units[0].inputs.len == 2) "merge" else "convert",
+        if (units[0].folder)
+            "archive of a folder"
+        else if (state.extract)
+            "extract"
+        else if (units[0].inputs.len == 2)
+            "merge"
+        else
+            "convert",
         if (units.len > 1) " of each input separately" else "",
     });
 }
@@ -430,16 +495,26 @@ fn worker(job: *Job) void {
         job.done.store(0, .release);
         job.total.store(0, .release);
         job.current_len.store(0, .release);
-        const outcome = p2z.bridge.run(
-            unit.mode,
-            job.kind,
-            job.overwrite,
-            unit.output,
-            unit.inputs,
-            progressCallback,
-            job,
-            &job.error_buf,
-        );
+        const outcome = if (unit.folder)
+            p2z.bridge.runFolder(
+                job.overwrite,
+                unit.output,
+                unit.inputs[0],
+                progressCallback,
+                job,
+                &job.error_buf,
+            )
+        else
+            p2z.bridge.run(
+                unit.mode,
+                job.kind,
+                job.overwrite,
+                unit.output,
+                unit.inputs,
+                progressCallback,
+                job,
+                &job.error_buf,
+            );
         job.outcomes[i] = outcome;
         if (outcome != .ok) break;
     }

@@ -30,8 +30,9 @@ Zig must be 0.17.0. If another version comes first on `PATH`, put 0.17 first.
 
 ## Usage
 
-GUI: drop one pkg (convert) or two (merge, roles detected automatically), choose Archive or
-Extract, pick the output, press Convert. The output name is built from `param.sfo` and the
+GUI: add one pkg (convert) or two (merge, roles detected automatically), choose Archive or
+Extract, pick the output, press Convert. "Add folder" takes an already extracted game tree
+(for example an emulator's `CUSA00190` directory) and archives it as it is. The output name is built from `param.sfo` and the
 header: `Terraria (CUSA00740) v01.00.zar`, plus ` - merged`, ` - base` or ` - update` where it
 matters, so names are stable regardless of the source file names. Cancel leaves nothing behind. Extract writes into
 `<out>.part` and replaces the destination only after every file is size-checked.
@@ -40,6 +41,7 @@ Headless, same code path as the GUI button:
 
 ```sh
 zig-out/bin/export out.zar base.pkg [update.pkg]
+zig-out/bin/export out.zar extracted-folder/    # archive a loose tree, no pkg needed
 zig-out/bin/extract out-dir base.pkg [update.pkg]
 zig-out/bin/plan  base.pkg [update.pkg]     # preflight and merge plan, writes nothing
 zig-out/bin/listfiles base.pkg [piece...]   # file tree of a pkg or piece set
@@ -63,6 +65,8 @@ logs a note.
 - PlayGo state is not modelled. A finished `.zar` is a fully installed game, so
   `sce_sys/playgo-chunk.dat` is copied as an ordinary file.
 - Delta updates, retail PSN passcodes, and DLC install layout are refused, not handled.
+- Folder input archives regular files and directories only; a symlink or special file inside
+  the tree is refused with its path, never followed or skipped.
 - Test fixtures are not committed. The unit tests build their own pkg (header, key blobs, PFSC
   tree, param.sfo) and convert it end to end, so CI covers the real path. Point `P2Z_TEST_ROM`
   at a directory of `.pkg` files to run the fixture tests as well.

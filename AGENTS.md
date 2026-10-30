@@ -74,7 +74,8 @@ Silence is worse than a crash, because it produces a wrong archive that looks va
 - Temp usage is an in-memory index plus a few MiB of buffers. Cap any spill at 512 MiB and abort
   before filling the disk.
 - Output is `name.zar.part`, renamed only after verification passes.
-- Input pkg files are opened read-only. Never write next to them without the user choosing it.
+- Input pkg files and input folders are opened read-only. Never write next to them without the
+  user choosing it. Folder input refuses symlinks and special files instead of following them.
 
 ## 7. Style
 
