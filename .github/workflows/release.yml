@@ -74,9 +74,9 @@ jobs:
             base="${dir#raw/raw-}"
             arch="${base##*-}"
             os="${base%-*}"
-            # Artifacts do not carry file modes, so the binaries arrive without +x.
-            chmod +x "$dir"/export "$dir"/extract "$dir"/listfiles "$dir"/pkginfo \
-              "$dir"/plan "$dir"/ps4-pkg2zar "$dir"/zar
+            # Artifacts do not carry file modes, so the binaries arrive without +x. The
+            # Windows set carries .exe suffixes, so the glob is the only portable list.
+            chmod +x "$dir"/*
             (cd "$dir" && zip -qr "$GITHUB_WORKSPACE/release/ps4-pkg2zar-${tag}-${os}-${arch}.zip" .)
           done
           (cd release && sha256sum ./*.zip > sha256sums.txt)
