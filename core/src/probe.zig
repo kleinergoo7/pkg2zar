@@ -85,9 +85,71 @@ pub fn run(io: std.Io, arena: std.mem.Allocator, path: []const u8) Error!Info {
 }
 
 fn titleId(header: *const pkg.Header) ?[]const u8 {
-    const id = std.mem.trimEnd(u8, &header.content_id, "\x00 ");
-    if (id.len < 16 or id[6] != '-') return null;
-    return id[7..16];
+    return parseTitleId(std.mem.trimEnd(u8, &header.content_id, "\x00 "));
+}
+
+/// `CUSAxxxxx` from a content id such as `UP9000-CUSA00191_00-KZ4RELEASE000041`.
+fn parseTitleId(content_id: []const u8) ?[]const u8 {
+    if (content_id.len < 16 or content_id[6] != '-') return null;
+    return content_id[7..16];
+}
+
+/// Identity of an already extracted folder: `<root>/sce_sys/param.sfo`. A folder without one
+/// is not an error; the caller falls back to the folder name.
+pub fn runFolder(io: std.Io, arena: std.mem.Allocator, root: []const u8) Error!Info {
+    const path = std.fmt.allocPrint(arena, "{s}/sce_sys/param.sfo", .{root}) catch
+        return error.OutOfMemory;
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return .{};
+    defer file.close(io);
+
+    const size = file.length(io) catch return .{};
+    // The real file is about 1 KiB; a bigger one is not a param.sfo.
+    if (size > 1024 * 1024) return error.BadParamSfo;
+    const bytes = arena.alloc(u8, @intCast(size)) catch return error.OutOfMemory;
+    const read = file.readPositionalAll(io, bytes, 0) catch return error.BadParamSfo;
+    if (read != bytes.len) return error.BadParamSfo;
+
+    var info: Info = .{};
+    info.title = psf.findString(bytes, "TITLE") catch return error.BadParamSfo;
+    info.version = psf.findString(bytes, "APP_VER") catch return error.BadParamSfo;
+    if (info.version == null) {
+        info.version = psf.findString(bytes, "VERSION") catch return error.BadParamSfo;
+    }
+    const declared_id = psf.findString(bytes, "TITLE_ID") catch return error.BadParamSfo;
+    const content_id = psf.findString(bytes, "CONTENT_ID") catch return error.BadParamSfo;
+    info.title_id = declared_id orelse if (content_id) |id| parseTitleId(id) else null;
+    return info;
+}
+
+test "probe: a folder identity comes from sce_sys/param.sfo" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const test_pkg = @import("test_pkg.zig");
+
+    const root = ".zig-cache/p2z-probe-folder";
+    std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, root ++ "/sce_sys");
+
+    const sfo = try test_pkg.paramSfo(arena, .{ .title = "Synthetic Game", .app_ver = "01.02" });
+    const file = try std.Io.Dir.cwd().createFile(io, root ++ "/sce_sys/param.sfo", .{ .truncate = true });
+    try file.writeStreamingAll(io, sfo);
+    file.close(io);
+
+    const info = try runFolder(io, arena, root);
+    try std.testing.expectEqualStrings("Synthetic Game", info.title.?);
+    try std.testing.expectEqualStrings("01.02", info.version.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), info.title_id);
+    try std.testing.expect(!info.is_patch);
+
+    // A folder without the file keeps working: empty identity, no error.
+    try std.Io.Dir.cwd().createDirPath(io, root ++ "-bare");
+    defer std.Io.Dir.cwd().deleteTree(io, root ++ "-bare") catch {};
+    const bare = try runFolder(io, arena, root ++ "-bare");
+    try std.testing.expectEqual(@as(?[]const u8, null), bare.title);
+    try std.testing.expectEqual(@as(?[]const u8, null), bare.version);
 }
 
 test "integration: probe reads the real title, id and version" {

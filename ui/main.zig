@@ -310,12 +310,25 @@ fn addFolder(path: []const u8) void {
     for (state.inputs.items) |existing| {
         if (std.mem.eql(u8, existing.path, path)) return;
     }
-    const input: Input = .{
+    var input: Input = .{
         .path = state.gpa.dupe(u8, path) catch return,
         .is_dir = true,
         .probed = true,
     };
-    log("{s}: folder, archived as it is", .{path});
+    // The folder carries the game identity in sce_sys/param.sfo, exactly like a pkg does.
+    const info = p2z.probe.runFolder(state.io, state.gpa, path) catch |err| {
+        log("{s}: folder, {s}", .{ path, p2z.probe.reasonName(err) });
+        state.inputs.append(state.gpa, input) catch {};
+        return;
+    };
+    if (info.title) |t| input.title = state.gpa.dupe(u8, t) catch &.{};
+    if (info.title_id) |id| input.id = state.gpa.dupe(u8, id) catch &.{};
+    if (info.version) |v| input.version = state.gpa.dupe(u8, v) catch &.{};
+    if (input.title.len > 0) {
+        log("{s}: folder, {s} ({s}) v{s}", .{ path, input.title, input.id, input.version });
+    } else {
+        log("{s}: folder without sce_sys/param.sfo, named after the directory", .{path});
+    }
     state.inputs.append(state.gpa, input) catch {};
 }
 
@@ -345,7 +358,17 @@ fn folderBase(path: []const u8) []const u8 {
 fn derivedName(index: usize) ?[]u8 {
     const input = state.inputs.items[index];
     if (input.is_dir) {
-        return std.fmt.allocPrint(state.gpa, "{s}.zar", .{folderBase(input.path)}) catch null;
+        var folder_arena = state.arena_state;
+        defer folder_arena.deinit();
+        const info: p2z.naming.Info = .{
+            .title = if (input.title.len > 0) input.title else null,
+            .title_id = if (input.id.len > 0) input.id else null,
+            .version = if (input.version.len > 0) input.version else null,
+            .role = .single,
+        };
+        // derive falls back to the folder name when the identity is empty.
+        const name = p2z.naming.derive(folder_arena.allocator(), info, folderBase(input.path)) catch return null;
+        return std.fmt.allocPrint(state.gpa, "{s}.zar", .{name}) catch null;
     }
     if (!input.probed) return null;
     var arena = state.arena_state;
@@ -365,12 +388,14 @@ fn autoOutput() void {
     if (state.inputs.items.len == 0) return;
     if (state.output_edited) return;
     const dir = std.fs.path.dirname(state.inputs.items[0].path) orelse ".";
-    state.output.clearRetainingCapacity();
     if (state.separate and state.inputs.items.len > 1) {
+        state.output.clearRetainingCapacity();
         state.output.appendSlice(state.gpa, dir) catch return;
     } else {
+        // Derive first: a failed derivation must not wipe a usable output path.
         const name = derivedName(0) orelse return;
         defer state.gpa.free(name);
+        state.output.clearRetainingCapacity();
         state.output.appendSlice(state.gpa, dir) catch return;
         state.output.append(state.gpa, '/') catch return;
         state.output.appendSlice(state.gpa, name) catch return;

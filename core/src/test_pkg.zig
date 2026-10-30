@@ -62,7 +62,7 @@ const media = struct {
 pub fn build(arena: std.mem.Allocator, options: Options) ![]u8 {
     if (options.content_id.len != pkg.content_id_len) return error.BadContentId;
 
-    const sfo = try buildSfo(arena, options);
+    const sfo = try paramSfo(arena, options);
     if (sfo_offset + sfo.len > pfs_offset) return error.SfoTooBig;
 
     const data = try arena.alloc(u8, package_size);
@@ -227,7 +227,8 @@ fn writeDirents(target: []u8, list: []const Dirent) void {
     }
 }
 
-fn buildSfo(arena: std.mem.Allocator, options: Options) ![]u8 {
+/// A minimal `param.sfo`, also used by the folder-probe tests.
+pub fn paramSfo(arena: std.mem.Allocator, options: Options) ![]u8 {
     const keys = "TITLE\x00APP_VER\x00";
     var values = std.ArrayList(u8).empty;
     defer values.deinit(arena);
