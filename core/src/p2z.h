@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 /* Must match ABI_VERSION in core/src/bridge.zig. */
-#define P2Z_ABI_VERSION 5u
+#define P2Z_ABI_VERSION 7u
 
 #define P2Z_OK 0
 #define P2Z_ERROR 1
@@ -33,6 +33,22 @@ typedef void (*p2z_progress_fn)(void *ctx, uint64_t done, uint64_t total,
                                 const char *current, size_t current_len);
 
 uint32_t p2z_abi_version(void);
+
+/* Reads the display name, title id, version and patch flag without decrypting.
+ * Buffers receive NUL-terminated strings. Returns 0 on success, 1 with a message in `err`. */
+int p2z_probe(const char *path, char *title, size_t title_len, char *title_id, size_t id_len,
+              char *version, size_t version_len, int *is_patch, char *err, size_t err_len);
+
+/* Output name roles for p2z_output_name. */
+#define P2Z_ROLE_SINGLE 0
+#define P2Z_ROLE_MERGED 1
+#define P2Z_ROLE_BASE 2
+#define P2Z_ROLE_UPDATE 3
+
+/* Builds the default output name (adds .zar unless extract is non-zero). Empty title,
+ * title_id or version are skipped. Returns 0 on success. */
+int p2z_output_name(int role, const char *title, const char *title_id, const char *version,
+                    int extract, char *out, size_t out_len);
 
 /* Sets the cancel flag for the running job. Safe to call from the UI thread. */
 void p2z_cancel(void);

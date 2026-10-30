@@ -27,7 +27,9 @@ zig build test
 ## Usage
 
 GUI: drop one pkg (convert) or two (merge, roles detected automatically), choose Archive or
-Extract, pick the output, press Convert. Cancel leaves nothing behind. Extract writes into
+Extract, pick the output, press Convert. The output name is built from `param.sfo` and the
+header: `Terraria (CUSA00740) v01.00.zar`, plus ` - merged`, ` - base` or ` - update` where it
+matters, so names are stable regardless of the source file names. Cancel leaves nothing behind. Extract writes into
 `<out>.part` and replaces the destination only after every file is size-checked.
 
 Headless, same code path as the GUI button:
@@ -49,7 +51,7 @@ QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest convert out.zar base
 QT_QPA_PLATFORM=offscreen ./build/ps4-pkg2zar --ui-selftest cancel  out.zar base.pkg update.pkg
 ```
 
-Modes: `convert`, `merge`, `swap`, `cancel`, `separate`, `extract`. It exits 0 on pass and prints the log on failure.
+Modes: `convert`, `merge`, `swap`, `cancel`, `separate`, `extract`, `name`, `name-merged`. It exits 0 on pass and prints the log on failure.
 
 Merge detects roles by content, not by list order: listing the update first swaps the two and
 logs a note.

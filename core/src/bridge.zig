@@ -8,9 +8,11 @@ const source = @import("source.zig");
 const plan_mod = @import("plan.zig");
 const exporter = @import("export.zig");
 const extractor = @import("extract.zig");
+const probe = @import("probe.zig");
+const naming = @import("naming.zig");
 const pieces = @import("pieces.zig");
 
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 7;
 
 pub const ProgressFn = *const fn (ctx: ?*anyopaque, done: u64, total: u64, current: [*]const u8, current_len: usize) callconv(.c) void;
 
@@ -21,6 +23,68 @@ var progress_ctx: ?*anyopaque = null;
 
 export fn p2z_abi_version() u32 {
     return ABI_VERSION;
+}
+
+/// Fills title, title id, version and the patch flag without touching crypto.
+/// Returns 0 on success, 1 on failure with a message in `err`.
+export fn p2z_probe(
+    path: [*:0]const u8,
+    title: [*]u8,
+    title_len: usize,
+    title_id: [*]u8,
+    id_len: usize,
+    version: [*]u8,
+    version_len: usize,
+    is_patch: *c_int,
+    err: [*]u8,
+    err_len: usize,
+) c_int {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+
+    const info = probe.run(threaded.io(), arena, std.mem.span(path)) catch |failure| {
+        writeMessage(err, err_len, probe.reasonName(failure));
+        return 1;
+    };
+    copyOut(info.title orelse "", title, title_len);
+    copyOut(info.title_id orelse "", title_id, id_len);
+    copyOut(info.version orelse "", version, version_len);
+    is_patch.* = if (info.is_patch) 1 else 0;
+    return 0;
+}
+
+/// Builds the default output name. Role: 0 single, 1 merged, 2 base, 3 update.
+/// Writes the name, with `.zar` unless `extract` is non-zero, NUL-terminated into `out`.
+export fn p2z_output_name(
+    role: c_int,
+    title: [*:0]const u8,
+    title_id: [*:0]const u8,
+    version: [*:0]const u8,
+    extract: c_int,
+    out: [*]u8,
+    out_len: usize,
+) c_int {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const requested = std.enums.fromInt(naming.Role, role) orelse return 1;
+    var info: naming.Info = .{ .role = requested };
+    if (std.mem.span(title).len > 0) info.title = std.mem.span(title);
+    if (std.mem.span(title_id).len > 0) info.title_id = std.mem.span(title_id);
+    if (std.mem.span(version).len > 0) info.version = std.mem.span(version);
+
+    const name = naming.derive(arena, info, "output") catch return 1;
+    const full = if (extract != 0)
+        name
+    else
+        std.fmt.allocPrint(arena, "{s}.zar", .{name}) catch return 1;
+    copyOut(full, out, out_len);
+    return 0;
 }
 
 export fn p2z_cancel() void {
@@ -199,6 +263,13 @@ fn failureCode(buffer: [*]u8, len: usize, failure: anyerror, comptime reasonName
     }
     writeMessage(buffer, len, reasonName(@errorCast(failure)));
     return 1;
+}
+
+fn copyOut(source_text: []const u8, buffer: [*]u8, len: usize) void {
+    if (len == 0) return;
+    const n = @min(len - 1, source_text.len);
+    @memcpy(buffer[0..n], source_text[0..n]);
+    buffer[n] = 0;
 }
 
 fn writeMessage(buffer: [*]u8, len: usize, message: []const u8) void {

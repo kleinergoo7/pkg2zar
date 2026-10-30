@@ -33,6 +33,7 @@ pub const entry_id_digests: u32 = 0x1;
 pub const entry_id_entry_keys: u32 = 0x10;
 pub const entry_id_image_key: u32 = 0x20;
 pub const entry_id_entry_names: u32 = 0x200;
+pub const entry_id_param_sfo: u32 = 0x1000;
 
 pub const content_flag_delta_patch: u32 = 0x41000000;
 pub const content_flag_first_patch: u32 = 0x100000;

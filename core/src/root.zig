@@ -15,6 +15,9 @@ pub const bridge = @import("bridge.zig");
 pub const plan = @import("plan.zig");
 pub const exporter = @import("export.zig");
 pub const extractor = @import("extract.zig");
+pub const psf = @import("psf.zig");
+pub const naming = @import("naming.zig");
+pub const probe = @import("probe.zig");
 
 test {
     std.testing.refAllDecls(@This());

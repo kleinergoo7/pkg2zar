@@ -7,6 +7,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileDialog>
+#include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -33,7 +34,17 @@
 
 #include "p2z.h"
 
-static std::string siblingPath(const std::string &output, const std::string &input, bool extract);
+struct InputInfo {
+    QString title;
+    QString titleId;
+    QString version;
+    bool patch = false;
+    bool ok = false;
+};
+
+static InputInfo probePath(const QString &path);
+static QString defaultName(const InputInfo &info, int role, bool extract);
+static std::string dirOf(const std::string &path);
 
 struct ProgressState {
     std::atomic<uint64_t> done{0};
@@ -69,6 +80,7 @@ public:
     void testClickCancel() { cancelButton_->click(); }
     bool testBusy() const { return running_.load(); }
     QString testLog() const { return log_->toPlainText(); }
+    QString testOutput() const { return output_->text(); }
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -76,6 +88,8 @@ protected:
 
 private:
     void addInputs(const QStringList &paths);
+    InputInfo infoOf(int index) const;
+    int roleFor(const InputInfo &info) const;
     void pickInputs();
     void pickOutput();
     bool extractMode() const;
@@ -105,6 +119,7 @@ private:
     std::atomic<int> result_{0};
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> last_percent{255};
+    bool outputEdited_ = false;
     QTimer timer_;
 };
 
@@ -175,6 +190,15 @@ MainWindow::MainWindow() {
     connect(browseButton_, &QPushButton::clicked, this, [this] { pickOutput(); });
     connect(convertButton_, &QPushButton::clicked, this, [this] { start(); });
     connect(cancelButton_, &QPushButton::clicked, this, [this] { cancel(); });
+    connect(output_, &QLineEdit::textEdited, this, [this] { outputEdited_ = true; });
+    connect(kindBox_, &QComboBox::currentIndexChanged, this, [this] {
+        outputEdited_ = false;
+        updateOutputDefault();
+    });
+    connect(separateBox_, &QCheckBox::toggled, this, [this] {
+        outputEdited_ = false;
+        updateOutputDefault();
+    });
     connect(&timer_, &QTimer::timeout, this, [this] { poll(); });
     timer_.setInterval(100);
 
@@ -217,15 +241,56 @@ void MainWindow::addInputs(const QStringList &paths) {
         existing << inputs_->item(i)->text();
     }
     for (const QString &path : paths) {
-        if (!existing.contains(path)) {
-            inputs_->addItem(path);
-            existing << path;
+        if (existing.contains(path)) {
+            continue;
+        }
+        auto *item = new QListWidgetItem(path);
+        const InputInfo info = probePath(path);
+        QVariantMap data;
+        data.insert(QStringLiteral("title"), info.title);
+        data.insert(QStringLiteral("id"), info.titleId);
+        data.insert(QStringLiteral("version"), info.version);
+        data.insert(QStringLiteral("patch"), info.patch);
+        data.insert(QStringLiteral("ok"), info.ok);
+        item->setData(Qt::UserRole, data);
+        inputs_->addItem(item);
+        existing << path;
+        if (info.ok) {
+            log(QStringLiteral("%1: %2 (%3) v%4%5")
+                    .arg(path, info.title, info.titleId, info.version,
+                         info.patch ? QStringLiteral(" [patch]") : QString()));
+        } else {
+            log(QStringLiteral("%1: could not read title, using the file name").arg(path));
         }
     }
     if (inputs_->count() > 2) {
         log(QStringLiteral("More than two inputs selected; only the first two are used."));
     }
     updateOutputDefault();
+}
+
+InputInfo MainWindow::infoOf(int index) const {
+    InputInfo info;
+    if (index < 0 || index >= inputs_->count()) {
+        return info;
+    }
+    const QVariantMap data = inputs_->item(index)->data(Qt::UserRole).toMap();
+    info.title = data.value(QStringLiteral("title")).toString();
+    info.titleId = data.value(QStringLiteral("id")).toString();
+    info.version = data.value(QStringLiteral("version")).toString();
+    info.patch = data.value(QStringLiteral("patch")).toBool();
+    info.ok = data.value(QStringLiteral("ok")).toBool();
+    return info;
+}
+
+int MainWindow::roleFor(const InputInfo &info) const {
+    if (separateBox_->isChecked() && inputs_->count() > 1) {
+        return info.patch ? P2Z_ROLE_UPDATE : P2Z_ROLE_BASE;
+    }
+    if (inputs_->count() > 1) {
+        return P2Z_ROLE_MERGED;
+    }
+    return P2Z_ROLE_SINGLE;
 }
 
 void MainWindow::pickInputs() {
@@ -251,12 +316,44 @@ void MainWindow::pickOutput() {
 }
 
 void MainWindow::updateOutputDefault() {
-    if (inputs_->count() == 0 || !output_->text().isEmpty()) {
+    if (inputs_->count() == 0) {
         return;
     }
-    QFileInfo info(inputs_->item(0)->text());
-    const QString suffix = extractMode() ? QString() : QStringLiteral(".zar");
-    output_->setText(info.absolutePath() + "/" + info.completeBaseName() + suffix);
+    const bool separate = separateBox_->isChecked() && inputs_->count() > 1;
+    const QString firstPath = inputs_->item(0)->text();
+    QFileInfo firstFile(firstPath);
+
+    if (separate) {
+        if (!outputEdited_ || output_->text().isEmpty()) {
+            output_->setText(firstFile.absolutePath());
+            outputEdited_ = false;
+        }
+        return;
+    }
+    if (outputEdited_ && !output_->text().isEmpty()) {
+        return;
+    }
+
+    // For a merge, take the name from the update: it wins every conflicting file.
+    int chosen = 0;
+    if (inputs_->count() > 1) {
+        for (int i = 0; i < inputs_->count(); ++i) {
+            if (infoOf(i).patch) {
+                chosen = i;
+                break;
+            }
+        }
+    }
+    const InputInfo info = infoOf(chosen);
+    QString name;
+    if (info.ok) {
+        name = defaultName(info, inputs_->count() > 1 ? P2Z_ROLE_MERGED : P2Z_ROLE_SINGLE, extractMode());
+    }
+    if (name.isEmpty()) {
+        name = firstFile.completeBaseName() + (extractMode() ? QString() : QStringLiteral(".zar"));
+    }
+    output_->setText(firstFile.absolutePath() + "/" + name);
+    outputEdited_ = false;
 }
 
 void MainWindow::setBusy(bool busy) {
@@ -297,14 +394,41 @@ void MainWindow::start() {
     const bool extract = extractMode();
     const int kind = extract ? P2Z_KIND_EXTRACT : P2Z_KIND_ARCHIVE;
 
-    // Ask before replacing anything; the core renames over the old file only after verify.
-    std::vector<std::string> targets;
+    // Build the jobs: one merged/convert job, or one job per input in separate mode.
+    struct Job {
+        std::vector<std::string> inputs;
+        std::string output;
+    };
+    std::vector<Job> jobs;
     if (separate) {
-        for (const std::string &input : owned) {
-            targets.push_back(siblingPath(outputUtf8, input, extract));
+        std::string dir = outputUtf8;
+        if (!QFileInfo(QString::fromStdString(outputUtf8)).isDir()) {
+            dir = dirOf(outputUtf8);
+        }
+        if (!dir.empty() && dir.back() != '/') {
+            dir.push_back('/');
+        }
+        for (int i = 0; i < inputs_->count(); ++i) {
+            const InputInfo info = infoOf(i);
+            QString name = info.ok ? defaultName(info, roleFor(info), extract)
+                                   : QString::fromStdString(owned[static_cast<size_t>(i)]);
+            if (name.isEmpty()) {
+                name = QFileInfo(inputs_->item(i)->text()).completeBaseName() +
+                       (extract ? QString() : QStringLiteral(".zar"));
+            }
+            if (!extract && !name.endsWith(QStringLiteral(".zar"))) {
+                name += QStringLiteral(".zar");
+            }
+            jobs.push_back({{owned[static_cast<size_t>(i)]}, dir + name.toStdString()});
         }
     } else {
-        targets.push_back(outputUtf8);
+        jobs.push_back({owned, outputUtf8});
+    }
+
+    // Ask before replacing anything; the core renames over the old file only after verify.
+    std::vector<std::string> targets;
+    for (const Job &job : jobs) {
+        targets.push_back(job.output);
     }
     bool overwrite = false;
     size_t existing = 0;
@@ -347,31 +471,28 @@ void MainWindow::start() {
     log(separate ? QStringLiteral("Starting separate conversion of %1 files...").arg(owned.size())
                  : QStringLiteral("Starting %1...").arg(owned.size() == 2 ? "merge" : "convert"));
 
-    worker_ = std::thread([this, owned, outputUtf8, separate, overwrite, kind] {
+    worker_ = std::thread([this, jobs, overwrite, kind, separate] {
         int code = P2Z_OK;
-        if (separate) {
-            for (const std::string &input : owned) {
-                std::string out = siblingPath(outputUtf8, input, extractMode());
-                std::vector<const char *> pointers{input.c_str()};
-                logFromWorker(QStringLiteral("Converting %1 -> %2")
-                                  .arg(QString::fromStdString(input), QString::fromStdString(out)));
-                progressState_.done.store(0);
-                progressState_.total.store(0);
-                code = p2z_run(P2Z_MODE_SINGLE, kind, overwrite ? 1 : 0, out.c_str(), pointers.data(), 1,
-                               progressCallback, &progressState_, error_.data(), error_.size());
-                if (code != P2Z_OK) {
-                    break;
-                }
-            }
-        } else {
+        for (const Job &job : jobs) {
             std::vector<const char *> pointers;
-            pointers.reserve(owned.size());
-            for (const std::string &path : owned) {
+            pointers.reserve(job.inputs.size());
+            for (const std::string &path : job.inputs) {
                 pointers.push_back(path.c_str());
             }
-            code = p2z_run(P2Z_MODE_AUTO, kind, overwrite ? 1 : 0, outputUtf8.c_str(), pointers.data(),
-                           owned.size(), progressCallback, &progressState_, error_.data(),
+            if (separate) {
+                logFromWorker(QStringLiteral("Converting %1 -> %2")
+                                  .arg(QString::fromStdString(job.inputs.front()),
+                                       QString::fromStdString(job.output)));
+                progressState_.done.store(0);
+                progressState_.total.store(0);
+            }
+            const int mode = separate ? P2Z_MODE_SINGLE : P2Z_MODE_AUTO;
+            code = p2z_run(mode, kind, overwrite ? 1 : 0, job.output.c_str(), pointers.data(),
+                           pointers.size(), progressCallback, &progressState_, error_.data(),
                            error_.size());
+            if (code != P2Z_OK) {
+                break;
+            }
         }
         result_.store(code);
         running_.store(false);
@@ -436,20 +557,42 @@ void MainWindow::log(const QString &line) {
 }
 
 /* Headless path used by the build gate: `ps4-pkg2zar --run out.zar in.pkg [update.pkg]`. */
-static std::string siblingPath(const std::string &output, const std::string &input, bool extract) {
-    std::string dir = output;
-    const size_t slash = dir.find_last_of("/\\");
-    dir = slash == std::string::npos ? std::string() : dir.substr(0, slash + 1);
-    std::string name = input;
-    const size_t islash = name.find_last_of("/\\");
-    if (islash != std::string::npos) {
-        name = name.substr(islash + 1);
+static std::string dirOf(const std::string &path) {
+    const size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
+}
+
+static InputInfo probePath(const QString &path) {
+    InputInfo info;
+    QByteArray title(256, 0);
+    QByteArray id(64, 0);
+    QByteArray version(64, 0);
+    char err[256] = {0};
+    int patch = 0;
+    const QByteArray native = path.toLocal8Bit();
+    const int code = p2z_probe(native.constData(), title.data(), title.size(), id.data(), id.size(),
+                               version.data(), version.size(), &patch, err, sizeof(err));
+    if (code != 0) {
+        return info;
     }
-    const size_t dot = name.find_last_of('.');
-    if (dot != std::string::npos) {
-        name = name.substr(0, dot);
+    info.title = QString::fromUtf8(title.constData());
+    info.titleId = QString::fromUtf8(id.constData());
+    info.version = QString::fromUtf8(version.constData());
+    info.patch = patch != 0;
+    info.ok = true;
+    return info;
+}
+
+static QString defaultName(const InputInfo &info, int role, bool extract) {
+    char name[512] = {0};
+    const QByteArray title = info.title.toUtf8();
+    const QByteArray id = info.titleId.toUtf8();
+    const QByteArray version = info.version.toUtf8();
+    if (p2z_output_name(role, title.constData(), id.constData(), version.constData(), extract ? 1 : 0,
+                        name, sizeof(name)) != 0) {
+        return QString();
     }
-    return dir + name + (extract ? "" : ".zar");
+    return QString::fromUtf8(name);
 }
 
 static int runHeadless(bool separate, int argc, char **argv) {
@@ -472,7 +615,7 @@ static int runHeadless(bool separate, int argc, char **argv) {
         return code;
     }
     for (const std::string &input : owned) {
-        const std::string out = siblingPath(output, input, false);
+        const std::string out = dirOf(output) + QFileInfo(QString::fromStdString(input)).completeBaseName().toStdString() + ".zar";
         const char *pointer = input.c_str();
         char err[512] = {0};
         const int code = p2z_run(P2Z_MODE_SINGLE, P2Z_KIND_ARCHIVE, 0, out.c_str(), &pointer, 1, nullptr,
@@ -506,12 +649,42 @@ static int runUiSelfTest(int argc, char **argv) {
 
     MainWindow window;
     window.show();
+
+    if (mode == "name" || mode == "name-merged") {
+        window.testSetInputs(inputs);
+        QTimer::singleShot(300, [&] {
+            const QString name = window.testOutput();
+            QStringList problems;
+            if (!name.contains(QStringLiteral("Terraria (CUSA00740)"))) {
+                problems << QStringLiteral("title or id missing");
+            }
+            if (mode == "name" && name.contains(QStringLiteral(" - "))) {
+                problems << QStringLiteral("single name has a role suffix");
+            }
+            if (mode == "name-merged" && !name.contains(QStringLiteral(" - merged"))) {
+                problems << QStringLiteral("merge name has no - merged suffix");
+            }
+            if (!name.endsWith(QStringLiteral(".zar"))) {
+                problems << QStringLiteral("no .zar suffix");
+            }
+            if (!problems.isEmpty()) {
+                std::fprintf(stderr, "UI SELFTEST FAIL: %s (got '%s')\n",
+                             qPrintable(problems.join(QStringLiteral(", "))), qPrintable(name));
+                QCoreApplication::exit(1);
+                return;
+            }
+            std::fprintf(stderr, "UI SELFTEST PASS: %s -> %s\n", mode.c_str(), qPrintable(name));
+            QCoreApplication::exit(0);
+        });
+        return QApplication::exec();
+    }
+
+    window.show();
+    // Configure kind and the separate box before the inputs, so the auto-naming runs last.
+    window.testSetKind(mode == "extract");
+    window.testSetSeparate(mode == "separate");
     window.testSetInputs(inputs);
     window.testSetOutput(output);
-    window.testSetSeparate(mode == "separate");
-    if (mode == "extract") {
-        window.testSetKind(true);
-    }
 
     QElapsedTimer clock;
     clock.start();
@@ -541,12 +714,12 @@ static int runUiSelfTest(int argc, char **argv) {
             require(QFileInfo::exists(output + QStringLiteral("/eboot.bin")), QStringLiteral("eboot.bin missing"));
             require(!QFileInfo::exists(part), QStringLiteral(".part left behind"));
         } else if (mode == "separate") {
-            require(window.testLog().contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
-            for (const QString &input : inputs) {
-                const QString derived =
-                    QString::fromStdString(siblingPath(output.toStdString(), input.toStdString(), mode == "extract"));
-                require(QFileInfo::exists(derived), QStringLiteral("derived archive missing: ") + derived);
-            }
+            require(log.count(QStringLiteral("Converting")) == inputs.size(),
+                    QStringLiteral("log does not show one conversion per input"));
+            require(log.contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
+            const QDir dir(QFileInfo(output).absolutePath());
+            const auto list = dir.entryList(QStringList{QStringLiteral("*.zar")}, QDir::Files);
+            require(list.size() >= inputs.size(), QStringLiteral("fewer archives than inputs"));
         } else {
             require(log.contains(QStringLiteral("Done")), QStringLiteral("log has no Done line"));
             require(QFileInfo::exists(output), QStringLiteral("archive missing"));
@@ -568,7 +741,7 @@ static int runUiSelfTest(int argc, char **argv) {
     poll.setInterval(100);
     QObject::connect(&poll, &QTimer::timeout, [&] {
         if (window.testBusy()) {
-            if (mode == "cancel" && !cancelSent && clock.elapsed() > 800) {
+            if (mode == "cancel" && !cancelSent && clock.elapsed() > 300) {
                 window.testClickCancel();
                 cancelSent = true;
             }
