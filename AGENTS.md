@@ -16,8 +16,8 @@ file, then `docs/`.
 
 ## 2. Language and boundaries
 
-- New code is Zig, pinned to 0.16.0 (`build.zig.zon` `.minimum_zig_version`, asserted in CMake).
-- Never write std or build APIs from memory; training data predates 0.16. Read
+- New code is Zig, pinned to 0.17.0 (`build.zig.zon` `.minimum_zig_version`, asserted in CMake).
+- Never write std or build APIs from memory; training data predates 0.17. Read
   `$(zig env | grep std_dir)` first.
 - C and C++ are debt: Qt shell, `core/src/p2z.h`, and nothing else. Do not add C/C++ files.
 - The C ABI carries pointers, lengths, integers and status codes only. No allocators, slices,

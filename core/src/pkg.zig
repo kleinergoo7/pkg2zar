@@ -295,7 +295,7 @@ test "parseHeader: rejects an offset plus size that overflows" {
 }
 
 test "parseEntries: reads a table row in on-disk order" {
-    var table: [entry_size * 2]u8 = [_]u8{0} ** (entry_size * 2);
+    var table: [entry_size * 2]u8 = @splat(0);
     std.mem.writeInt(u32, table[0..4], 0x1200, .big);
     std.mem.writeInt(u32, table[4..8], 0x6e, .big);
     std.mem.writeInt(u32, table[8..12], 0, .big);
@@ -313,7 +313,7 @@ test "parseEntries: reads a table row in on-disk order" {
 }
 
 test "parseEntries: rejects a table past the end" {
-    var table: [entry_size]u8 = [_]u8{0} ** entry_size;
+    var table: [entry_size]u8 = @splat(0);
     var entries: [2]Entry = undefined;
     try std.testing.expectError(error.BadOffset, parseEntries(&table, 0, &entries));
     try std.testing.expectError(error.BadOffset, parseEntries(&table, 0x1000, entries[0..1]));

@@ -82,7 +82,7 @@ pub fn xtsDecrypt(data_key: [16]u8, tweak_key: [16]u8, sector: u64, src: []const
     const data_ctx = std.crypto.core.aes.Aes128.initDec(data_key);
     const tweak_ctx = std.crypto.core.aes.Aes128.initEnc(tweak_key);
 
-    var sector_block: [16]u8 = [_]u8{0} ** 16;
+    var sector_block: [16]u8 = @splat(0);
     std.mem.writeInt(u64, sector_block[0..8], sector, .little);
     var tweak: [16]u8 = undefined;
     tweak_ctx.encrypt(&tweak, &sector_block);
@@ -169,7 +169,8 @@ test "rsa pkcs1 v1.5 decrypt recovers ekpfs with the fake keyset" {
 
 test "rsa pkcs1 v1.5 decrypt rejects a short ciphertext" {
     var out: [32]u8 = undefined;
-    try std.testing.expectError(error.CiphertextWrongLength, rsaPkcs1v15Decrypt(fake_key_set, &[_]u8{0} ** 16, &out));
+    const zeros: [16]u8 = @splat(0);
+    try std.testing.expectError(error.CiphertextWrongLength, rsaPkcs1v15Decrypt(fake_key_set, &zeros, &out));
 }
 
 test "sha256 and hmac-sha256 match published vectors" {

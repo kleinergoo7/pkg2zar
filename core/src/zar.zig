@@ -146,7 +146,7 @@ pub const Writer = struct {
         const meta_offset = self.out_offset;
 
         const total_size = self.out_offset + footer_size;
-        var footer: [footer_size]u8 = [_]u8{0} ** footer_size;
+        var footer: [footer_size]u8 = @splat(0);
         // Layout matches the reference struct: six offset/size pairs, then the integrity
         // hash, then total size, version and magic.
         writeU64(&footer, 0, 0); // compressed data offset
@@ -247,7 +247,7 @@ pub const Writer = struct {
         while (head < queue.items.len) : (head += 1) {
             const node_idx = queue.items[head];
             const node = self.nodes.items[node_idx];
-            var entry: [16]u8 = [_]u8{0} ** 16;
+            var entry: [16]u8 = @splat(0);
             const name_offset: u32 = if (node_idx == 0) 0x7FFFFFFF else try self.nameOffset(node.name);
             const type_flag: u32 = if (node.is_file) 0x80000000 else 0;
             writeU32(&entry, 0, type_flag | name_offset);
@@ -570,7 +570,8 @@ test "zar writer round-trips files and directories" {
         try writer.startFile("sce_sys/param.sfo");
         try writer.appendData("\x00PSFtest");
         try writer.startFile("eboot.bin");
-        try writer.appendData("x" ** 1000);
+        var thousand: [1000]u8 = @splat('x');
+        try writer.appendData(&thousand);
         try writer.finalize();
     }
     created.close(io);
@@ -601,5 +602,6 @@ test "zar writer round-trips files and directories" {
     const big = try arena.alloc(u8, 1000);
     defer arena.free(big);
     try reader.readFile(exe, big);
-    try std.testing.expectEqualSlices(u8, "x" ** 1000, big);
+    const thousand: [1000]u8 = @splat('x');
+    try std.testing.expectEqualSlices(u8, &thousand, big);
 }

@@ -8,24 +8,24 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # No hard-coded locations: take $ZIG, else the first zig on PATH. The version check below
-# refuses anything but 0.16.0, so a conflicting install must be selected explicitly.
+# refuses anything but 0.17.0, so a conflicting install must be selected explicitly.
 if(NOT ZIG_EXECUTABLE)
   if(DEFINED ENV{ZIG} AND NOT "$ENV{ZIG}" STREQUAL "")
-    set(ZIG_EXECUTABLE "$ENV{ZIG}" CACHE FILEPATH "Zig 0.16.0 compiler")
+    set(ZIG_EXECUTABLE "$ENV{ZIG}" CACHE FILEPATH "Zig 0.17.0 compiler")
   else()
-    find_program(ZIG_EXECUTABLE NAMES zig zig-0.16 zig0.16)
+    find_program(ZIG_EXECUTABLE NAMES zig zig-0.17 zig0.17)
   endif()
 endif()
 if(NOT ZIG_EXECUTABLE)
-  message(FATAL_ERROR "Zig 0.16.0 not found. Set ZIG, pass -DZIG_EXECUTABLE=<path>, or put it on PATH.")
+  message(FATAL_ERROR "Zig 0.17.0 not found. Set ZIG, pass -DZIG_EXECUTABLE=<path>, or put it on PATH.")
 endif()
 execute_process(
   COMMAND "${ZIG_EXECUTABLE}" version
   OUTPUT_VARIABLE ZIG_VERSION
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
-if(NOT ZIG_VERSION VERSION_EQUAL "0.16.0")
-  message(FATAL_ERROR "Zig 0.16.0 required, found '${ZIG_VERSION}'")
+if(NOT ZIG_VERSION VERSION_EQUAL "0.17.0")
+  message(FATAL_ERROR "Zig 0.17.0 required, found '${ZIG_VERSION}'")
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)

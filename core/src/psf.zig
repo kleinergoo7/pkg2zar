@@ -119,6 +119,6 @@ test "psf: reads TITLE and APP_VER" {
 }
 
 test "psf: refuses a wrong magic" {
-    var bytes: [0x40]u8 = [_]u8{0} ** 0x40;
+    var bytes: [0x40]u8 = @splat(0);
     try std.testing.expectError(error.BadMagic, findString(&bytes, "TITLE"));
 }
