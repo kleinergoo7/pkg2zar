@@ -9,9 +9,9 @@ const plan_mod = @import("plan.zig");
 const exporter = @import("export.zig");
 const pieces = @import("pieces.zig");
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
-pub const ProgressFn = *const fn (ctx: ?*anyopaque, done: u64, total: u64) callconv(.c) void;
+pub const ProgressFn = *const fn (ctx: ?*anyopaque, done: u64, total: u64, current: [*]const u8, current_len: usize) callconv(.c) void;
 
 var cancel_flag = std.atomic.Value(bool).init(false);
 
@@ -27,7 +27,7 @@ export fn p2z_cancel() void {
 }
 
 fn report(_: ?*anyopaque, progress: exporter.Progress) void {
-    if (progress_fn) |callback| callback(progress_ctx, progress.done, progress.total);
+    if (progress_fn) |callback| callback(progress_ctx, progress.done, progress.total, progress.current.ptr, progress.current.len);
 }
 
 /// Job mode. AUTO groups a piece set when the names say so, otherwise one input converts and
@@ -199,7 +199,7 @@ test "integration: p2z_run converts through the C ABI" {
 
 const TestProgress = struct {
     var last_done: u64 = 0;
-    fn cb(_: ?*anyopaque, done: u64, _: u64) callconv(.c) void {
+    fn cb(_: ?*anyopaque, done: u64, _: u64, _: [*]const u8, _: usize) callconv(.c) void {
         last_done = done;
     }
 };

@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -33,15 +34,22 @@
 struct ProgressState {
     std::atomic<uint64_t> done{0};
     std::atomic<uint64_t> total{0};
+    std::mutex mutex;
+    std::string current;
 };
 
-static void progressCallback(void *ctx, uint64_t done, uint64_t total) {
+static void progressCallback(void *ctx, uint64_t done, uint64_t total, const char *current,
+                             size_t currentLen) {
     auto *state = static_cast<ProgressState *>(ctx);
     if (state == nullptr) {
         return;
     }
     state->done.store(done, std::memory_order_relaxed);
     state->total.store(total, std::memory_order_relaxed);
+    if (current != nullptr) {
+        std::lock_guard<std::mutex> guard(state->mutex);
+        state->current.assign(current, currentLen);
+    }
 }
 
 class MainWindow : public QMainWindow {
@@ -73,6 +81,7 @@ private:
     QPushButton *cancelButton_;
     QCheckBox *separateBox_;
     QProgressBar *progress_;
+    QLabel *currentFile_;
     QPlainTextEdit *log_;
 
     std::thread worker_;
@@ -116,6 +125,10 @@ MainWindow::MainWindow() {
     progress_ = new QProgressBar(central);
     progress_->setRange(0, 1000);
     layout->addWidget(progress_);
+
+    currentFile_ = new QLabel(central);
+    currentFile_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(currentFile_);
 
     separateBox_ = new QCheckBox(QStringLiteral("Convert each input separately (no merge)"), central);
     layout->addWidget(separateBox_);
@@ -297,6 +310,7 @@ void MainWindow::start() {
     error_.fill(0);
     result_.store(0);
     progress_->setValue(0);
+    currentFile_->clear();
     last_percent.store(255);
 
     setBusy(true);
@@ -370,6 +384,14 @@ void MainWindow::poll() {
     const uint64_t done = progressState_.done.load(std::memory_order_relaxed);
     if (total > 0) {
         progress_->setValue(static_cast<int>(done * 1000 / total));
+    }
+    std::string current;
+    {
+        std::lock_guard<std::mutex> guard(progressState_.mutex);
+        current = progressState_.current;
+    }
+    if (!current.empty()) {
+        currentFile_->setText(QString::fromStdString(current));
     }
 
     if (running_.load()) {

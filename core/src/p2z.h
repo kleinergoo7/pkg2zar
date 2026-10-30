@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 /* Must match ABI_VERSION in core/src/bridge.zig. */
-#define P2Z_ABI_VERSION 3u
+#define P2Z_ABI_VERSION 4u
 
 #define P2Z_OK 0
 #define P2Z_ERROR 1
@@ -24,7 +24,9 @@ extern "C" {
 #define P2Z_MODE_MERGE 1  /* force base + update */
 #define P2Z_MODE_SINGLE 2 /* every input is one piece set */
 
-typedef void (*p2z_progress_fn)(void *ctx, uint64_t done, uint64_t total);
+/* `current` is the entry being written; it is not NUL-terminated. */
+typedef void (*p2z_progress_fn)(void *ctx, uint64_t done, uint64_t total,
+                                const char *current, size_t current_len);
 
 uint32_t p2z_abi_version(void);
 

@@ -37,6 +37,8 @@ pub fn reasonName(err: Error) []const u8 {
 pub const Progress = struct {
     done: u64,
     total: u64,
+    /// Path of the entry currently being written. Not NUL-terminated.
+    current: []const u8,
 };
 
 pub const Callback = *const fn (ctx: ?*anyopaque, progress: Progress) void;
@@ -79,11 +81,14 @@ pub fn run(
     var writer = zar.Writer.init(io, file, arena) catch return error.WriteFailed;
 
     var done: u64 = 0;
+    var current: []const u8 = "";
     const total = plan.total_bytes;
     var buffer = arena.alloc(u8, chunk_size) catch return error.OutOfMemory;
 
     for (plan.items) |item| {
         if (options.cancel.load(.acquire)) return error.Cancelled;
+        current = item.path;
+        report(options, done, total, current);
         switch (item.kind) {
             .pfs_dir => writer.makeDir(item.path) catch return error.WriteFailed,
             .pkg_entry => {
@@ -98,7 +103,7 @@ pub fn run(
                     writer.appendData(buffer[0..take]) catch return error.WriteFailed;
                     offset += take;
                     done += take;
-                    report(options, done, total);
+                    report(options, done, total, current);
                 }
             },
             .pfs_file => {
@@ -116,7 +121,7 @@ pub fn run(
                     written += take;
                     done += take;
                     block_index += 1;
-                    report(options, done, total);
+                    report(options, done, total, current);
                 }
             },
         }
@@ -194,8 +199,8 @@ fn fileExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
-fn report(options: Options, done: u64, total: u64) void {
-    if (options.on_progress) |callback| callback(options.ctx, .{ .done = done, .total = total });
+fn report(options: Options, done: u64, total: u64, current: []const u8) void {
+    if (options.on_progress) |callback| callback(options.ctx, .{ .done = done, .total = total, .current = current });
 }
 
 test "integration: export verifies and cancel leaves nothing behind" {
