@@ -32,7 +32,10 @@ Zig must be 0.17.0. If another version comes first on `PATH`, put 0.17 first.
 
 GUI: add one pkg (convert) or two (merge, roles detected automatically), choose Archive or
 Extract, pick the output, press Convert. "Add folder" takes an already extracted game tree
-(for example an emulator's `CUSA00190` directory) and archives it as it is. The output name is built from `param.sfo` and the
+(for example an emulator's `CUSA00190` directory) and archives it as it is. Two folders merge like
+a base and its update: `APP_VER` from `sce_sys/param.sfo` decides which one is the update, the
+update wins on a shared path, and the name gets ` - merged` (or ` - base` / ` - update` with
+"Each separately"). A mismatched title id or an equal version is refused with the reason. The output name is built from `param.sfo` and the
 header: `Terraria (CUSA00740) v01.00.zar`, plus ` - merged`, ` - base` or ` - update` where it
 matters, so names are stable regardless of the source file names. Cancel leaves nothing behind. Extract writes into
 `<out>.part` and replaces the destination only after every file is size-checked.
@@ -42,6 +45,7 @@ Headless, same code path as the GUI button:
 ```sh
 zig-out/bin/export out.zar base.pkg [update.pkg]
 zig-out/bin/export out.zar extracted-folder/    # archive a loose tree, no pkg needed
+zig-out/bin/export out.zar base-folder/ update-folder/   # merge two trees by APP_VER
 zig-out/bin/extract out-dir base.pkg [update.pkg]
 zig-out/bin/plan  base.pkg [update.pkg]     # preflight and merge plan, writes nothing
 zig-out/bin/listfiles base.pkg [piece...]   # file tree of a pkg or piece set

@@ -23,7 +23,8 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
 
     const output = args.next() orelse std.process.fatal(
-        "usage: export <out.zar> <base.pkg> [update.pkg]\n       export <out.zar> <extracted-folder>",
+        "usage: export <out.zar> <base.pkg> [update.pkg]\n" ++
+            "       export <out.zar> <folder> [update-folder]",
         .{},
     );
     var paths: [2][]const u8 = undefined;
@@ -39,14 +40,17 @@ pub fn main(init: std.process.Init) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    // A single directory is an extracted tree, not a pkg. Anything else goes down the pkg path,
-    // which produces its own precise message when the path is not a pkg.
-    if (count == 1) {
-        if (std.Io.Dir.cwd().openDir(init.io, paths[0], .{})) |dir| {
+    // Directories are extracted trees, not pkgs. A mix of the two cannot be merged, and the
+    // pkg path below produces its own precise message when a path is not a pkg.
+    var directories: usize = 0;
+    for (paths[0..count]) |path| {
+        if (std.Io.Dir.cwd().openDir(init.io, path, .{})) |dir| {
             dir.close(init.io);
-            return exportFolder(init, arena, paths[0], output);
+            directories += 1;
         } else |_| {}
     }
+    if (directories == count) return exportFolders(init, arena, paths[0..count], output);
+    if (directories > 0) std.process.fatal("do not mix pkgs and folders: {s}", .{paths[0]});
 
     var sources: [2]p2z.source.Source = undefined;
     var opened: usize = 0;
@@ -93,14 +97,55 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("wrote {s}: {d} files, {d} dirs, {d} bytes\n", .{ output, stats.files, stats.dirs, stats.bytes });
 }
 
-fn exportFolder(init: std.process.Init, arena: std.mem.Allocator, root: []const u8, output: []const u8) !void {
-    const stats = p2z.folder.run(arena, init.io, root, .{
+fn exportFolders(
+    init: std.process.Init,
+    arena: std.mem.Allocator,
+    paths: []const []const u8,
+    output: []const u8,
+) !void {
+    var ordered: [2][]const u8 = undefined;
+    var roots: []const []const u8 = paths;
+    if (paths.len == 2) {
+        const first = p2z.probe.runFolder(init.io, arena, paths[0]) catch |err|
+            std.process.fatal("{s}: {s}", .{ paths[0], p2z.probe.reasonName(err) });
+        const second = p2z.probe.runFolder(init.io, arena, paths[1]) catch |err|
+            std.process.fatal("{s}: {s}", .{ paths[1], p2z.probe.reasonName(err) });
+        switch (p2z.probe.folderRole(first, second)) {
+            .ok => |pair| {
+                ordered[0] = paths[pair.base];
+                ordered[1] = paths[pair.update];
+                roots = ordered[0..2];
+            },
+            .missing_title_id => |f| std.process.fatal(
+                "{s}: no title id in sce_sys/param.sfo, cannot tell base from update",
+                .{f.path},
+            ),
+            .title_mismatch => |f| std.process.fatal(
+                "title ids differ: {s} and {s}; these are not a base and its update",
+                .{ f.first, f.second },
+            ),
+            .missing_version => |f| std.process.fatal(
+                "{s}: no APP_VER in sce_sys/param.sfo, cannot tell base from update",
+                .{f.path},
+            ),
+            .same_version => |f| std.process.fatal(
+                "cannot tell base from update: both are v{s}",
+                .{f.version},
+            ),
+            .version_unreadable => |f| std.process.fatal(
+                "{s}: APP_VER '{s}' is not numeric",
+                .{ f.path, f.version },
+            ),
+        }
+    }
+
+    const stats = p2z.folder.runRoots(arena, init.io, roots, .{
         .output = output,
         .cancel = &cancelled,
         .on_progress = onProgress,
     }) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        else => |e| std.process.fatal("{s}: {s}", .{ root, p2z.folder.reasonName(e) }),
+        else => |e| std.process.fatal("{s}: {s}", .{ roots[0], p2z.folder.reasonName(e) }),
     };
 
     std.debug.print("\r", .{});

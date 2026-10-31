@@ -13,6 +13,8 @@ pub const Info = struct {
     title_id: ?[]const u8 = null,
     version: ?[]const u8 = null,
     is_patch: bool = false,
+    /// Input path, so role messages can name the offending folder.
+    path: []const u8 = "",
 };
 
 pub const Error = error{
@@ -65,6 +67,7 @@ pub fn run(io: std.Io, arena: std.mem.Allocator, path: []const u8) Error!Info {
     var info: Info = .{
         .title_id = titleId(&header),
         .is_patch = pkg.isPatch(header.content_flags),
+        .path = path,
     };
 
     var param: ?pkg.Entry = null;
@@ -94,6 +97,71 @@ fn parseTitleId(content_id: []const u8) ?[]const u8 {
     return content_id[7..16];
 }
 
+/// Result of ordering a base folder and an update folder.
+pub const RoleCheck = union(enum) {
+    ok: struct { base: usize, update: usize },
+    missing_title_id: struct { side: usize, path: []const u8 },
+    title_mismatch: struct { first: []const u8, second: []const u8 },
+    missing_version: struct { side: usize, path: []const u8 },
+    same_version: struct { version: []const u8 },
+    version_unreadable: struct { side: usize, path: []const u8, version: []const u8 },
+};
+
+/// Orders two folder identities. A pkg carries content flags that say which one is the patch;
+/// an extracted tree only has APP_VER, so the higher version is the update.
+pub fn folderRole(first: Info, second: Info) RoleCheck {
+    const a = first.title_id orelse
+        return .{ .missing_title_id = .{ .side = 0, .path = first.path } };
+    const b = second.title_id orelse
+        return .{ .missing_title_id = .{ .side = 1, .path = second.path } };
+    if (!std.mem.eql(u8, a, b)) return .{ .title_mismatch = .{ .first = a, .second = b } };
+
+    const va = first.version orelse
+        return .{ .missing_version = .{ .side = 0, .path = first.path } };
+    const vb = second.version orelse
+        return .{ .missing_version = .{ .side = 1, .path = second.path } };
+
+    const order = compareVersions(va, vb) orelse {
+        const side: usize = if (std.mem.indexOfNone(u8, va, "0123456789.") != null) 0 else 1;
+        return .{ .version_unreadable = .{
+            .side = side,
+            .path = if (side == 0) first.path else second.path,
+            .version = if (side == 0) va else vb,
+        } };
+    };
+    return switch (order) {
+        .lt => .{ .ok = .{ .base = 0, .update = 1 } },
+        .gt => .{ .ok = .{ .base = 1, .update = 0 } },
+        .eq => .{ .same_version = .{ .version = va } },
+    };
+}
+
+/// Dotted numeric compare; null when a component is not a number. Missing components are 0,
+/// so `1.0` equals `1.0.0`.
+fn compareVersions(a: []const u8, b: []const u8) ?std.math.Order {
+    var parts_a = std.mem.splitScalar(u8, a, '.');
+    var parts_b = std.mem.splitScalar(u8, b, '.');
+    while (true) {
+        const ca = parts_a.next();
+        const cb = parts_b.next();
+        if (ca == null and cb == null) return .eq;
+        const va = if (ca) |text| parseVersionPart(text) orelse return null else 0;
+        const vb = if (cb) |text| parseVersionPart(text) orelse return null else 0;
+        if (va < vb) return .lt;
+        if (va > vb) return .gt;
+    }
+}
+
+fn parseVersionPart(text: []const u8) ?u64 {
+    if (text.len == 0) return null;
+    var value: u64 = 0;
+    for (text) |c| {
+        if (c < '0' or c > '9') return null;
+        value = value * 10 + (c - '0');
+    }
+    return value;
+}
+
 /// Identity of an already extracted folder: `<root>/sce_sys/param.sfo`. A folder without one
 /// is not an error; the caller falls back to the folder name.
 pub fn runFolder(io: std.Io, arena: std.mem.Allocator, root: []const u8) Error!Info {
@@ -109,7 +177,7 @@ pub fn runFolder(io: std.Io, arena: std.mem.Allocator, root: []const u8) Error!I
     const read = file.readPositionalAll(io, bytes, 0) catch return error.BadParamSfo;
     if (read != bytes.len) return error.BadParamSfo;
 
-    var info: Info = .{};
+    var info: Info = .{ .path = root };
     info.title = psf.findString(bytes, "TITLE") catch return error.BadParamSfo;
     info.version = psf.findString(bytes, "APP_VER") catch return error.BadParamSfo;
     if (info.version == null) {
@@ -119,6 +187,51 @@ pub fn runFolder(io: std.Io, arena: std.mem.Allocator, root: []const u8) Error!I
     const content_id = psf.findString(bytes, "CONTENT_ID") catch return error.BadParamSfo;
     info.title_id = declared_id orelse if (content_id) |id| parseTitleId(id) else null;
     return info;
+}
+
+test "folderRole: the higher APP_VER is the update" {
+    const base: Info = .{ .title_id = "CUSA00191", .version = "01.00", .path = "base/" };
+    const update: Info = .{ .title_id = "CUSA00191", .version = "01.81", .path = "update/" };
+
+    switch (folderRole(base, update)) {
+        .ok => |pair| {
+            try std.testing.expectEqual(@as(usize, 0), pair.base);
+            try std.testing.expectEqual(@as(usize, 1), pair.update);
+        },
+        else => return error.UnexpectedRole,
+    }
+    // The same pair in the other order must flip the indices, not the answer.
+    switch (folderRole(update, base)) {
+        .ok => |pair| {
+            try std.testing.expectEqual(@as(usize, 1), pair.base);
+            try std.testing.expectEqual(@as(usize, 0), pair.update);
+        },
+        else => return error.UnexpectedRole,
+    }
+}
+
+test "folderRole: refuses equal versions and mismatched title ids" {
+    const a: Info = .{ .title_id = "CUSA00191", .version = "01.81", .path = "a/" };
+    const same: Info = .{ .title_id = "CUSA00191", .version = "01.81", .path = "b/" };
+    switch (folderRole(a, same)) {
+        .same_version => |f| try std.testing.expectEqualStrings("01.81", f.version),
+        else => return error.UnexpectedRole,
+    }
+
+    const other: Info = .{ .title_id = "CUSA00190", .version = "01.00", .path = "c/" };
+    switch (folderRole(a, other)) {
+        .title_mismatch => |f| {
+            try std.testing.expectEqualStrings("CUSA00191", f.first);
+            try std.testing.expectEqualStrings("CUSA00190", f.second);
+        },
+        else => return error.UnexpectedRole,
+    }
+
+    const unreadable: Info = .{ .title_id = "CUSA00191", .version = "01.x", .path = "d/" };
+    switch (folderRole(a, unreadable)) {
+        .version_unreadable => |f| try std.testing.expectEqualStrings("01.x", f.version),
+        else => return error.UnexpectedRole,
+    }
 }
 
 test "probe: a folder identity comes from sce_sys/param.sfo" {

@@ -355,33 +355,61 @@ fn folderBase(path: []const u8) []const u8 {
     return std.fs.path.basename(path[0..end]);
 }
 
-fn derivedName(index: usize) ?[]u8 {
-    const input = state.inputs.items[index];
-    if (input.is_dir) {
-        var folder_arena = state.arena_state;
-        defer folder_arena.deinit();
-        const info: p2z.naming.Info = .{
-            .title = if (input.title.len > 0) input.title else null,
-            .title_id = if (input.id.len > 0) input.id else null,
-            .version = if (input.version.len > 0) input.version else null,
-            .role = .single,
-        };
-        // derive falls back to the folder name when the identity is empty.
-        const name = p2z.naming.derive(folder_arena.allocator(), info, folderBase(input.path)) catch return null;
-        return std.fmt.allocPrint(state.gpa, "{s}.zar", .{name}) catch null;
+fn folderInfo(input: Input) p2z.probe.Info {
+    return .{
+        .title = if (input.title.len > 0) input.title else null,
+        .title_id = if (input.id.len > 0) input.id else null,
+        .version = if (input.version.len > 0) input.version else null,
+        .path = input.path,
+    };
+}
+
+const FolderOrder = struct { base: usize, update: usize };
+
+/// Base-first order of two folder inputs, or null when they are not a matching pair.
+fn folderOrder() ?FolderOrder {
+    if (state.inputs.items.len != 2) return null;
+    const first = state.inputs.items[0];
+    const second = state.inputs.items[1];
+    if (!first.is_dir or !second.is_dir) return null;
+    return switch (p2z.probe.folderRole(folderInfo(first), folderInfo(second))) {
+        .ok => |pair| .{ .base = pair.base, .update = pair.update },
+        else => null,
+    };
+}
+
+fn logRoleProblem(check: p2z.probe.RoleCheck) void {
+    switch (check) {
+        .ok => {},
+        .missing_title_id => |f| log("{s}: no title id in sce_sys/param.sfo, cannot tell base from update.", .{f.path}),
+        .title_mismatch => |f| log("Title ids differ: {s} and {s}; not a base and its update.", .{ f.first, f.second }),
+        .missing_version => |f| log("{s}: no APP_VER in sce_sys/param.sfo, cannot tell base from update.", .{f.path}),
+        .same_version => |f| log("Cannot tell base from update: both are v{s}.", .{f.version}),
+        .version_unreadable => |f| log("{s}: APP_VER '{s}' is not numeric.", .{ f.path, f.version }),
     }
-    if (!input.probed) return null;
+}
+
+fn derivedNameFor(index: usize, role: p2z.naming.Role) ?[]u8 {
+    const input = state.inputs.items[index];
     var arena = state.arena_state;
     defer arena.deinit();
     const info: p2z.naming.Info = .{
         .title = if (input.title.len > 0) input.title else null,
         .title_id = if (input.id.len > 0) input.id else null,
         .version = if (input.version.len > 0) input.version else null,
-        .role = roleOf(input, state.separate, state.inputs.items.len),
+        .role = role,
     };
-    const name = p2z.naming.derive(arena.allocator(), info, input.path) catch return null;
-    const full = std.fmt.allocPrint(state.gpa, "{s}{s}", .{ name, if (state.extract) "" else ".zar" }) catch return null;
-    return full;
+    const fallback = if (input.is_dir) folderBase(input.path) else input.path;
+    const name = p2z.naming.derive(arena.allocator(), info, fallback) catch return null;
+    const extension = if (input.is_dir or !state.extract) ".zar" else "";
+    return std.fmt.allocPrint(state.gpa, "{s}{s}", .{ name, extension }) catch null;
+}
+
+fn derivedName(index: usize) ?[]u8 {
+    const input = state.inputs.items[index];
+    if (input.is_dir) return derivedNameFor(index, .single);
+    if (!input.probed) return null;
+    return derivedNameFor(index, roleOf(input, state.separate, state.inputs.items.len));
 }
 
 fn autoOutput() void {
@@ -391,15 +419,20 @@ fn autoOutput() void {
     if (state.separate and state.inputs.items.len > 1) {
         state.output.clearRetainingCapacity();
         state.output.appendSlice(state.gpa, dir) catch return;
-    } else {
-        // Derive first: a failed derivation must not wipe a usable output path.
-        const name = derivedName(0) orelse return;
-        defer state.gpa.free(name);
-        state.output.clearRetainingCapacity();
-        state.output.appendSlice(state.gpa, dir) catch return;
-        state.output.append(state.gpa, '/') catch return;
-        state.output.appendSlice(state.gpa, name) catch return;
+        return;
     }
+
+    // A base and an update folder produce one merged name, taken from the base identity.
+    const name = if (folderOrder()) |pair|
+        derivedNameFor(pair.base, .merged)
+    else
+        derivedName(0);
+    const derived = name orelse return; // Do not wipe a usable path on a failed derivation.
+    defer state.gpa.free(derived);
+    state.output.clearRetainingCapacity();
+    state.output.appendSlice(state.gpa, dir) catch return;
+    state.output.append(state.gpa, '/') catch return;
+    state.output.appendSlice(state.gpa, derived) catch return;
 }
 
 fn startConversion() void {
@@ -418,6 +451,11 @@ fn startConversion() void {
     for (state.inputs.items) |input| {
         if (input.is_dir) folders += 1;
     }
+    const separate = state.separate and state.inputs.items.len > 1;
+
+    // Folder roles come from APP_VER, not from the order the folders were added.
+    var order: [2]usize = .{ 0, 1 };
+    var roles: [2]p2z.naming.Role = .{ .single, .single };
     if (folders > 0) {
         if (folders != state.inputs.items.len) {
             log("Do not mix pkgs and folders; add one kind at a time.", .{});
@@ -427,14 +465,29 @@ fn startConversion() void {
             log("Extract needs pkg inputs; a folder is already extracted.", .{});
             return;
         }
-        if (state.inputs.items.len > 1 and !state.separate) {
-            log("One archive takes one folder; tick Each separately for several.", .{});
+        if (state.inputs.items.len > 2) {
+            log("At most two folders: a base and its update.", .{});
             return;
+        }
+        if (state.inputs.items.len == 2) {
+            const check = p2z.probe.folderRole(
+                folderInfo(state.inputs.items[0]),
+                folderInfo(state.inputs.items[1]),
+            );
+            switch (check) {
+                .ok => |pair| {
+                    order = .{ pair.base, pair.update };
+                    roles = if (separate) .{ .base, .update } else .{ .merged, .single };
+                },
+                else => {
+                    logRoleProblem(check);
+                    return;
+                },
+            }
         }
     }
 
     const kind: p2z.bridge.Kind = if (state.extract) .extract else .archive;
-    const separate = state.separate and state.inputs.items.len > 1;
 
     var targets: std.ArrayList([]u8) = .empty;
     defer {
@@ -443,8 +496,11 @@ fn startConversion() void {
     }
     if (separate) {
         const dir = if (std.mem.endsWith(u8, output, "/")) output else std.fs.path.dirname(output) orelse ".";
-        for (state.inputs.items, 0..) |_, i| {
-            const name = derivedName(i) orelse continue;
+        const count = state.inputs.items.len;
+        for (0..count) |pos| {
+            const index = if (folders > 0) order[pos] else pos;
+            const role = if (folders > 0) roles[pos] else roleOf(state.inputs.items[index], true, count);
+            const name = derivedNameFor(index, role) orelse continue;
             defer state.gpa.free(name);
             const target = std.fmt.allocPrint(state.gpa, "{s}/{s}", .{ dir, name }) catch return;
             targets.append(state.gpa, target) catch return;
@@ -480,38 +536,37 @@ fn startConversion() void {
     job.* = .{ .units = units, .outcomes = outcomes, .kind = kind, .overwrite = overwrite };
 
     for (targets.items, 0..) |target, i| {
-        const source_indexes: []const usize = if (separate)
-            &[_]usize{i}
-        else blk: {
-            const all = state.gpa.alloc(usize, state.inputs.items.len) catch return;
-            for (all, 0..) |*slot, n| slot.* = n;
-            break :blk all;
-        };
-        const inputs = state.gpa.alloc([]u8, source_indexes.len) catch return;
-        for (source_indexes, 0..) |src, n| {
-            inputs[n] = state.gpa.dupe(u8, state.inputs.items[src].path) catch return;
+        // One root per separate job; a merged job carries base and update in that order.
+        const root_count: usize = if (separate) 1 else state.inputs.items.len;
+        const inputs = state.gpa.alloc([]u8, root_count) catch return;
+        for (0..root_count) |n| {
+            const index = if (separate)
+                (if (folders > 0) order[i] else i)
+            else
+                (if (folders > 0) order[n] else n);
+            inputs[n] = state.gpa.dupe(u8, state.inputs.items[index].path) catch return;
         }
         units[i] = .{
             .inputs = inputs,
             .output = state.gpa.dupe(u8, target) catch return,
             .mode = if (separate) .single else .auto,
-            .folder = state.inputs.items[source_indexes[0]].is_dir,
+            .folder = folders > 0,
         };
     }
 
     job.thread = std.Thread.spawn(.{}, worker, .{job}) catch return;
     state.job = job;
-    log("Starting {s}{s}...", .{
-        if (units[0].folder)
-            "archive of a folder"
-        else if (state.extract)
-            "extract"
-        else if (units[0].inputs.len == 2)
-            "merge"
-        else
-            "convert",
-        if (units.len > 1) " of each input separately" else "",
-    });
+    const action = blk: {
+        if (units[0].folder) {
+            if (units.len > 1) break :blk "archive of each folder";
+            if (units[0].inputs.len == 2) break :blk "merge of two folders";
+            break :blk "archive of a folder";
+        }
+        if (state.extract) break :blk "extract";
+        if (units[0].inputs.len == 2) break :blk "merge";
+        break :blk "convert";
+    };
+    log("Starting {s}{s}...", .{ action, if (units.len > 1) " separately" else "" });
 }
 
 fn worker(job: *Job) void {
@@ -524,7 +579,7 @@ fn worker(job: *Job) void {
             p2z.bridge.runFolder(
                 job.overwrite,
                 unit.output,
-                unit.inputs[0],
+                unit.inputs,
                 progressCallback,
                 job,
                 &job.error_buf,

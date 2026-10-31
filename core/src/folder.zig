@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ps4-pkg2zar contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Streams an already extracted folder into a `.zar.part`, verifies it by reopening, and only
-//! then renames. Same contract as export.zig: cancel and every failure remove the partial file.
+//! Streams one or two extracted folders into a `.zar.part`, verifies it by reopening, and only
+//! then renames. Later roots win on the same path, which is how a base folder and an update
+//! folder merge. Same contract as export.zig: cancel and every failure remove the partial file.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -49,21 +50,48 @@ const chunk_size: usize = 256 * 1024;
 
 const Totals = struct { files: usize, dirs: usize, bytes: u64 };
 
+/// One folder, archived as it is.
 pub fn run(
     arena: std.mem.Allocator,
     io: std.Io,
     root_path: []const u8,
     options: Options,
 ) Error!Stats {
+    const roots = [_][]const u8{root_path};
+    return runRoots(arena, io, &roots, options);
+}
+
+/// Several folders in priority order: a later root replaces a file of an earlier one.
+pub fn runRoots(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    roots: []const []const u8,
+    options: Options,
+) Error!Stats {
+    if (roots.len == 0 or roots.len > 2) return error.NotADirectory;
     if (!options.overwrite and fileExists(io, options.output)) return error.OutputExists;
 
-    const root = std.Io.Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch
-        return error.NotADirectory;
-    defer root.close(io);
+    var dirs: [2]std.Io.Dir = undefined;
+    var opened: usize = 0;
+    defer for (dirs[0..opened]) |dir| dir.close(io);
+    for (roots, 0..) |root_path, i| {
+        dirs[i] = std.Io.Dir.cwd().openDir(io, root_path, .{ .iterate = true }) catch
+            return error.NotADirectory;
+        opened += 1;
+    }
 
-    // Progress needs the total before the first byte is written, and an unsupported entry
-    // must fail before a .part file exists.
-    const totals = try scan(arena, io, root);
+    // Resolving the effective tree first gives an exact progress total and rejects an
+    // unsupported entry before a .part file exists.
+    const items = try collect(arena, io, roots, dirs[0..opened]);
+    var totals: Totals = .{ .files = 0, .dirs = 0, .bytes = 0 };
+    for (items) |item| {
+        if (item.is_dir) {
+            totals.dirs += 1;
+        } else {
+            totals.files += 1;
+            totals.bytes += item.size;
+        }
+    }
 
     const part_path = std.fmt.allocPrint(arena, "{s}.part", .{options.output}) catch
         return error.OutOfMemory;
@@ -75,52 +103,46 @@ pub fn run(
 
     var writer = zar.Writer.init(io, file, arena) catch |err| return writerError(err);
 
-    var expected = std.ArrayList(Expected).empty;
     const buffer = arena.alloc(u8, chunk_size) catch return error.OutOfMemory;
     var done: u64 = 0;
 
-    var walker = root.walk(arena) catch |err| return walkError(err);
-    defer walker.deinit();
-    while (true) {
-        const entry = walker.next(io) catch |err| return walkError(err);
-        if (entry == null) break;
-        const item = entry.?;
+    // Directories first, then files, each in first-seen order: the same archive for the same
+    // input, and no reliance on the writer creating missing parents.
+    for ([_]bool{ true, false }) |want_dir| {
+        for (items) |item| {
+            if (item.is_dir != want_dir) continue;
+            if (options.cancel.load(.acquire)) return error.Cancelled;
+            report(options, done, totals.bytes, item.path);
 
-        if (options.cancel.load(.acquire)) return error.Cancelled;
-        report(options, done, totals.bytes, item.path);
+            if (item.is_dir) {
+                writer.makeDir(item.path) catch |err| return writerError(err);
+                continue;
+            }
 
-        // Windows hands back backslash paths; the archive stores components only, and the
-        // verification below compares against what was written, so normalise once here.
-        const rel = try archivePath(arena, item.path);
-        switch (item.kind) {
-            .directory => {
-                writer.makeDir(rel) catch |err| return writerError(err);
-                try pushExpectation(arena, &expected, rel, 0, true);
-            },
-            .file => {
-                const src = item.dir.openFile(io, item.basename, .{}) catch return error.ReadFailed;
-                defer src.close(io);
-                const size = src.length(io) catch return error.ReadFailed;
+            const full = std.fmt.allocPrint(arena, "{s}/{s}", .{ roots[item.root_index], item.path }) catch
+                return error.OutOfMemory;
+            const src = std.Io.Dir.cwd().openFile(io, full, .{}) catch return error.ReadFailed;
+            defer src.close(io);
+            // A file that changed between the scan and this read would silently truncate.
+            const size = src.length(io) catch return error.ReadFailed;
+            if (size != item.size) {
+                std.debug.print("folder: {s} changed size during the run\n", .{item.path});
+                return error.ReadFailed;
+            }
 
-                writer.startFile(rel) catch |err| return writerError(err);
-                var offset: u64 = 0;
-                while (offset < size) {
-                    if (options.cancel.load(.acquire)) return error.Cancelled;
-                    const take: usize = @intCast(@min(chunk_size, size - offset));
-                    const read = src.readPositionalAll(io, buffer[0..take], offset) catch
-                        return error.ReadFailed;
-                    if (read != take) return error.ReadFailed;
-                    writer.appendData(buffer[0..take]) catch |err| return writerError(err);
-                    offset += take;
-                    done += take;
-                    report(options, done, totals.bytes, item.path);
-                }
-                try pushExpectation(arena, &expected, rel, size, false);
-            },
-            else => {
-                std.debug.print("folder: {s} is not a regular file or directory\n", .{item.path});
-                return error.UnsupportedEntry;
-            },
+            writer.startFile(item.path) catch |err| return writerError(err);
+            var offset: u64 = 0;
+            while (offset < size) {
+                if (options.cancel.load(.acquire)) return error.Cancelled;
+                const take: usize = @intCast(@min(chunk_size, size - offset));
+                const read = src.readPositionalAll(io, buffer[0..take], offset) catch
+                    return error.ReadFailed;
+                if (read != take) return error.ReadFailed;
+                writer.appendData(buffer[0..take]) catch |err| return writerError(err);
+                offset += take;
+                done += take;
+                report(options, done, totals.bytes, item.path);
+            }
         }
     }
 
@@ -128,7 +150,7 @@ pub fn run(
     file.close(io);
     closed = true;
 
-    verify(io, arena, part_path, expected.items) catch |err| {
+    verify(io, arena, part_path, items) catch |err| {
         std.debug.print("verify failed: {t}\n", .{err});
         return error.VerifyFailed;
     };
@@ -139,62 +161,82 @@ pub fn run(
     return .{ .files = totals.files, .dirs = totals.dirs, .bytes = totals.bytes };
 }
 
-fn scan(arena: std.mem.Allocator, io: std.Io, root: std.Io.Dir) Error!Totals {
-    var totals: Totals = .{ .files = 0, .dirs = 0, .bytes = 0 };
-    var walker = root.walk(arena) catch |err| return walkError(err);
-    defer walker.deinit();
-    while (true) {
-        const entry = walker.next(io) catch |err| return walkError(err);
-        if (entry == null) break;
-        const item = entry.?;
-        switch (item.kind) {
-            .directory => totals.dirs += 1,
-            .file => {
-                const file = item.dir.openFile(io, item.basename, .{}) catch return error.ReadFailed;
-                defer file.close(io);
-                totals.bytes += file.length(io) catch return error.ReadFailed;
-                totals.files += 1;
-            },
-            else => {
-                std.debug.print("folder: {s} is not a regular file or directory\n", .{item.path});
+const Item = struct {
+    /// Path inside the archive, `/` separated.
+    path: []const u8,
+    is_dir: bool,
+    size: u64,
+    /// Which root the winning version comes from.
+    root_index: usize,
+};
+
+fn collect(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    roots: []const []const u8,
+    dirs: []std.Io.Dir,
+) Error![]Item {
+    _ = roots;
+    var list = std.ArrayList(Item).empty;
+    var by_path = std.StringHashMapUnmanaged(usize).empty;
+
+    for (dirs, 0..) |root, root_index| {
+        var walker = root.walk(arena) catch |err| return walkError(err);
+        defer walker.deinit();
+        while (true) {
+            const entry = walker.next(io) catch |err| return walkError(err);
+            if (entry == null) break;
+            const found = entry.?;
+
+            // Windows hands back backslash paths; the archive stores components only, and the
+            // verification compares against what was written, so normalise once here.
+            const rel = try archivePath(arena, found.path);
+            const is_dir = found.kind == .directory;
+            if (!is_dir and found.kind != .file) {
+                std.debug.print("folder: {s} is not a regular file or directory\n", .{found.path});
                 return error.UnsupportedEntry;
-            },
+            }
+
+            const size: u64 = if (is_dir) 0 else blk: {
+                const file = found.dir.openFile(io, found.basename, .{}) catch return error.ReadFailed;
+                defer file.close(io);
+                break :blk file.length(io) catch return error.ReadFailed;
+            };
+
+            const lower = try lowerDup(arena, rel);
+            if (by_path.get(lower)) |index| {
+                if (list.items[index].is_dir != is_dir) {
+                    std.debug.print("folder: {s} is a file in one input and a directory in the other\n", .{rel});
+                    return error.PathConflict;
+                }
+                // A later root replaces an earlier one.
+                list.items[index].size = size;
+                list.items[index].root_index = root_index;
+            } else {
+                by_path.put(arena, lower, list.items.len) catch return error.OutOfMemory;
+                list.append(arena, .{
+                    .path = rel,
+                    .is_dir = is_dir,
+                    .size = size,
+                    .root_index = root_index,
+                }) catch return error.OutOfMemory;
+            }
         }
     }
-    return totals;
+    return list.toOwnedSlice(arena);
 }
 
-fn archivePath(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
-    const copy = arena.dupe(u8, path) catch return error.OutOfMemory;
-    _ = std.mem.replaceScalar(u8, copy, '\\', '/');
-    return copy;
-}
-
-const Expected = struct { path: []const u8, size: u64, is_dir: bool };
-
-fn pushExpectation(
-    arena: std.mem.Allocator,
-    list: *std.ArrayList(Expected),
-    path: []const u8,
-    size: u64,
-    is_dir: bool,
-) Error!void {
-    const copy = arena.dupe(u8, path) catch return error.OutOfMemory;
-    list.append(arena, .{ .path = copy, .size = size, .is_dir = is_dir }) catch
-        return error.OutOfMemory;
-}
-
-fn verify(io: std.Io, arena: std.mem.Allocator, path: []const u8, expected: []const Expected) !void {
+fn verify(io: std.Io, arena: std.mem.Allocator, path: []const u8, items: []const Item) !void {
     const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return error.VerifyFailed;
     defer file.close(io);
     var reader = zar.Reader.open(io, file, arena) catch return error.VerifyFailed;
     const entries = reader.entries() catch return error.VerifyFailed;
 
-    if (entries.len != expected.len) {
-        std.debug.print("verify: {d} entries, expected {d}\n", .{ entries.len, expected.len });
+    if (entries.len != items.len) {
+        std.debug.print("verify: {d} entries, expected {d}\n", .{ entries.len, items.len });
         return error.VerifyFailed;
     }
-    for (expected) |want| {
+    for (items) |want| {
         var found = false;
         for (entries) |got| {
             if (!std.mem.eql(u8, got.path, want.path)) continue;
@@ -210,6 +252,18 @@ fn verify(io: std.Io, arena: std.mem.Allocator, path: []const u8, expected: []co
             return error.VerifyFailed;
         }
     }
+}
+
+fn archivePath(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
+    const copy = arena.dupe(u8, path) catch return error.OutOfMemory;
+    _ = std.mem.replaceScalar(u8, copy, '\\', '/');
+    return copy;
+}
+
+fn lowerDup(arena: std.mem.Allocator, path: []const u8) Error![]const u8 {
+    const copy = arena.dupe(u8, path) catch return error.OutOfMemory;
+    for (copy) |*c| c.* = std.ascii.toLower(c.*);
+    return copy;
 }
 
 fn writerError(err: zar.Error) Error {
@@ -309,6 +363,47 @@ test "folder: archives a tree and verifies the result" {
         .output = out,
         .cancel = &cancelled,
     }));
+}
+
+test "folder: a later root replaces a file of an earlier one" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const base = ".zig-cache/p2z-merge-base";
+    const update = ".zig-cache/p2z-merge-update";
+    std.Io.Dir.cwd().deleteTree(io, base) catch {};
+    std.Io.Dir.cwd().deleteTree(io, update) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, base) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, update) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, base ++ "/shared");
+    try std.Io.Dir.cwd().createDirPath(io, update ++ "/shared");
+    try writeFile(io, base ++ "/kept.txt", "only in base\n");
+    try writeFile(io, base ++ "/shared/data.bin", "base data\n");
+    try writeFile(io, update ++ "/shared/data.bin", "update data\n");
+    try writeFile(io, update ++ "/added.txt", "only in update\n");
+
+    const out = ".zig-cache/p2z-merge.zar";
+    defer std.Io.Dir.cwd().deleteFile(io, out) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, out ++ ".part") catch {};
+
+    var cancelled = std.atomic.Value(bool).init(false);
+    const roots = [_][]const u8{ base, update };
+    const stats = try runRoots(arena, io, &roots, .{ .output = out, .cancel = &cancelled });
+    try std.testing.expectEqual(@as(usize, 3), stats.files);
+    try std.testing.expectEqual(@as(usize, 1), stats.dirs);
+
+    const file = try std.Io.Dir.cwd().openFile(io, out, .{});
+    defer file.close(io);
+    var reader = try zar.Reader.open(io, file, arena);
+    const entries = try reader.entries();
+    const data = for (entries) |entry| {
+        if (std.mem.eql(u8, entry.path, "shared/data.bin")) break entry;
+    } else return error.MissingEntry;
+    var bytes: [12]u8 = undefined;
+    try reader.readFile(data, bytes[0..@intCast(data.size)]);
+    try std.testing.expectEqualStrings("update data\n", bytes[0..@intCast(data.size)]);
 }
 
 test "folder: cancel leaves no output and no partial file" {

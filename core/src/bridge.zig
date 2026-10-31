@@ -184,7 +184,7 @@ pub fn run(
 pub fn runFolder(
     allow_overwrite: bool,
     output: []const u8,
-    root: []const u8,
+    roots: []const []const u8,
     callback: ?ProgressFn,
     ctx: ?*anyopaque,
     err: []u8,
@@ -199,7 +199,7 @@ pub fn runFolder(
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
 
-    _ = folder.run(arena_state.allocator(), threaded.io(), root, .{
+    _ = folder.runRoots(arena_state.allocator(), threaded.io(), roots, .{
         .output = output,
         .overwrite = allow_overwrite,
         .cancel = &cancel_flag,
@@ -279,11 +279,13 @@ test "integration: runFolder archives a folder and reports a missing one" {
 
     var err: [256]u8 = @splat(0);
     TestProgress.last_done = 0;
-    try std.testing.expectEqual(Outcome.ok, runFolder(false, out, dir, TestProgress.cb, null, &err));
+    const roots = [_][]const u8{dir};
+    try std.testing.expectEqual(Outcome.ok, runFolder(false, out, &roots, TestProgress.cb, null, &err));
     try std.testing.expect(exists(out));
     try std.testing.expect(TestProgress.last_done > 0);
 
-    const missing = runFolder(false, out ++ ".x", ".zig-cache/p2z-bridge-no-folder", null, null, &err);
+    const none = [_][]const u8{".zig-cache/p2z-bridge-no-folder"};
+    const missing = runFolder(false, out ++ ".x", &none, null, null, &err);
     try std.testing.expectEqual(Outcome.failed, missing);
     try std.testing.expect(std.mem.indexOf(u8, &err, "not a readable directory") != null);
 }
