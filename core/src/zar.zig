@@ -479,7 +479,9 @@ pub const Reader = struct {
         var len: u32 = self.names[pos] & 0x7F;
         if (self.names[pos] & 0x80 != 0) {
             if (pos + 1 >= self.names.len) return error.BadNames;
-            len |= @as(u32, self.names[pos]) << 7;
+            // The writer stores the low seven bits in the first byte and bits 7.. in the
+            // second, so a long name must be reassembled from `pos + 1`.
+            len |= @as(u32, self.names[pos + 1]) << 7;
             pos += 2;
         } else pos += 1;
         if (pos + len > self.names.len) return error.BadNames;
@@ -623,6 +625,46 @@ test "zar writer round-trips files and directories" {
     try reader.readFile(exe, big);
     const thousand: [1000]u8 = @splat('x');
     try std.testing.expectEqualSlices(u8, &thousand, big);
+}
+
+test "zar: a name longer than 127 bytes round-trips" {
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const path = ".zig-cache/zar-longname-test.zar";
+
+    // 157 bytes, the shape of the longest names in a real game tree; the writer switches to
+    // a two-byte length header at 128, which the reader used to decode from the wrong byte.
+    const long_name = "models.building_blocks.vekta_hgh.vegetation.components.vegetation_vekta_hgh_trees_b001_c003_imposter.impostor_textures.model_impostor_normal_depth.corestream";
+    try std.testing.expectEqual(@as(usize, 157), long_name.len);
+
+    const created = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true, .truncate = true });
+    {
+        var writer = try Writer.init(io, created, arena);
+        defer writer.nodes.deinit(arena);
+        try writer.makeDir("lumps");
+        const rel = try std.fmt.allocPrint(arena, "lumps/{s}", .{long_name});
+        try writer.startFile(rel);
+        try writer.appendData("payload");
+        try writer.finalize();
+    }
+    created.close(io);
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var reader = try Reader.open(io, file, arena);
+    const entries = try reader.entries();
+    const expected = try std.fmt.allocPrint(arena, "lumps/{s}", .{long_name});
+    var found = false;
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.path, expected)) {
+            found = true;
+            try std.testing.expectEqual(@as(u64, 7), entry.size);
+        }
+    }
+    try std.testing.expect(found);
 }
 
 test "zar copyFile writes the entry block by block" {
