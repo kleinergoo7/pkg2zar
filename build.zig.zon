@@ -1,7 +1,7 @@
 .{
     .fingerprint = 0xf6107d111442513c,
     .name = .p2z,
-    .version = "0.2.0",
+    .version = "0.2.1",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .dvui = .{
