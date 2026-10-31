@@ -4,6 +4,7 @@
 const std = @import("std");
 
 pub const pkg = @import("pkg.zig");
+pub const pkg_names = @import("pkg_names.zig");
 pub const crypto = @import("crypto.zig");
 
 pub const pfs = @import("pfs.zig");

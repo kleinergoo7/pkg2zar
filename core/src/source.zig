@@ -236,13 +236,18 @@ pub const Source = struct {
     }
 
     /// sce_sys files that live in the pkg entry table rather than the PFS image.
+    /// Every pkg entry as the mandate extractor writes it: `sce_sys/<table name>`, or
+    /// `sce_sys/<decimal id>` for an id outside the table. Includes the metadata blobs.
     pub fn sceFiles(self: Source) ![]SceFile {
         var out: std.ArrayListUnmanaged(SceFile) = .empty;
         for (self.entries) |entry| {
-            if (entry.size == 0) continue;
-            const name = self.entryName(entry) orelse pkg.entryNameById(entry.id) orelse continue;
-            const path = try std.fmt.allocPrint(self.arena, "sce_sys/{s}", .{name});
-            try out.append(self.arena, .{ .path = path, .entry = entry });
+            if (pkg.entryNameById(entry.id)) |name| {
+                const path = try std.fmt.allocPrint(self.arena, "sce_sys/{s}", .{name});
+                try out.append(self.arena, .{ .path = path, .entry = entry });
+            } else {
+                const path = try std.fmt.allocPrint(self.arena, "sce_sys/{d}", .{entry.id});
+                try out.append(self.arena, .{ .path = path, .entry = entry });
+            }
         }
         return out.toOwnedSlice(self.arena);
     }

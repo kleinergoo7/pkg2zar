@@ -129,6 +129,9 @@ pub const Writer = struct {
             self.buffered = 0;
             try self.storeBlock(&self.buffer);
         }
+        // The reference records the compressed-data size before the 8-byte padding; using the
+        // padded offset makes a valid archive differ from it by one byte in the footer.
+        const data_size = self.out_offset;
         while (self.out_offset % 8 != 0) try self.output(&[_]u8{0});
 
         const offset_records_offset = self.out_offset;
@@ -150,7 +153,7 @@ pub const Writer = struct {
         // Layout matches the reference struct: six offset/size pairs, then the integrity
         // hash, then total size, version and magic.
         writeU64(&footer, 0, 0); // compressed data offset
-        writeU64(&footer, 8, offset_records_offset); // compressed data size
+        writeU64(&footer, 8, data_size); // compressed data size, before the padding
         writeU64(&footer, 16, offset_records_offset);
         writeU64(&footer, 24, offset_records_size);
         writeU64(&footer, 32, names_offset);
@@ -269,7 +272,7 @@ pub const Writer = struct {
 
     fn nameOffset(self: *Writer, name: []const u8) Error!u32 {
         for (self.names.items, 0..) |candidate, i| {
-            if (std.ascii.eqlIgnoreCase(candidate, name)) {
+            if (std.mem.eql(u8, candidate, name)) {
                 var offset: u32 = 0;
                 for (self.names.items[0..i]) |n| {
                     const capped = @min(n.len, 0x7FFF);
@@ -290,13 +293,13 @@ pub const Writer = struct {
         });
         try self.nodes.items[parent].children.append(self.arena, idx);
 
-        var lower = try self.arena.alloc(u8, name.len);
-        for (name, 0..) |c, i| lower[i] = std.ascii.toLower(c);
-        try self.name_map.put(self.arena, lower, idx);
+        // The reference keys its name table on the exact string, so `Default.png` and
+        // `default.png` are two entries even though directory lookups ignore case.
+        try self.name_map.put(self.arena, try self.arena.dupe(u8, name), idx);
 
         var exists = false;
         for (self.names.items) |n| {
-            if (std.ascii.eqlIgnoreCase(n, name)) {
+            if (std.mem.eql(u8, n, name)) {
                 exists = true;
                 break;
             }

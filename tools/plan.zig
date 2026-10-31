@@ -14,12 +14,17 @@ pub fn main(init: std.process.Init) !void {
 
     var paths: [2][]const u8 = undefined;
     var count: usize = 0;
+    var manifest = false;
     while (args.next()) |arg| {
-        if (count == 2) std.process.fatal("usage: plan <base.pkg> [update.pkg]", .{});
+        if (std.mem.eql(u8, arg, "--manifest")) {
+            manifest = true;
+            continue;
+        }
+        if (count == 2) std.process.fatal("usage: plan [--manifest] <base.pkg> [update.pkg]", .{});
         paths[count] = arg;
         count += 1;
     }
-    if (count == 0) std.process.fatal("usage: plan <base.pkg> [update.pkg]", .{});
+    if (count == 0) std.process.fatal("usage: plan [--manifest] <base.pkg> [update.pkg]", .{});
 
     var arena_state = std.heap.ArenaAllocator.init(init.gpa);
     defer arena_state.deinit();
@@ -62,6 +67,21 @@ pub fn main(init: std.process.Init) !void {
     const plan = try p2z.plan.build(arena, sources[0..count]);
 
     var out: std.Io.Writer = .fixed(try arena.alloc(u8, 64 * 1024));
+
+    // Verification manifest: the exact writer call sequence, so a reference writer can be fed
+    // the same order for a byte comparison.
+    if (manifest) {
+        for (plan.items) |item| {
+            const tag = switch (item.kind) {
+                .pfs_dir => "d",
+                .pkg_entry, .pfs_file => "f",
+            };
+            try out.print("{s} {s}\n", .{ tag, item.path });
+        }
+        try std.Io.File.stdout().writeStreamingAll(init.io, out.buffer[0..out.end]);
+        return;
+    }
+
     try out.print("mode        {s}\n", .{if (count == 2) "merge" else "convert"});
     try out.print("title id    {s}\n", .{base_identity.titleId() orelse "?"});
     try out.print("files       {d}\n", .{plan.file_count});

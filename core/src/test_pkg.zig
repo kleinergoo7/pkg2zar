@@ -446,7 +446,9 @@ test "synthetic pkg converts and extracts end to end" {
     for (entries) |entry| {
         if (entry.is_file) files += 1;
     }
-    try std.testing.expectEqual(@as(usize, 5), files);
+    // Four pfs files plus the four pkg entries the extractor writes (entry_keys, image_key,
+    // entry_names, param.sfo).
+    try std.testing.expectEqual(@as(usize, 8), files);
 
     const out_dir = ".zig-cache/p2z-synthetic-tree";
     defer std.Io.Dir.cwd().deleteTree(io, out_dir) catch {};
@@ -494,5 +496,5 @@ test "synthetic pkg probes and merges as a patch" {
 
     try std.testing.expect(plan_mod.preflight(.fromSource(&sources[0]), .fromSource(&sources[1])) == null);
     const merged = try plan_mod.build(arena, &sources);
-    try std.testing.expectEqual(@as(usize, 5), merged.file_count);
+    try std.testing.expectEqual(@as(usize, 8), merged.file_count);
 }

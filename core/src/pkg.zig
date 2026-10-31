@@ -5,6 +5,7 @@
 //! Field offsets were confirmed against the two fixtures in test-rom/ (handoff §6).
 
 const std = @import("std");
+const pkg_names = @import("pkg_names.zig");
 
 pub const header_size: usize = 0x1000;
 pub const magic = [4]u8{ 0x7f, 'C', 'N', 'T' };
@@ -35,20 +36,10 @@ pub const entry_id_image_key: u32 = 0x20;
 pub const entry_id_entry_names: u32 = 0x200;
 pub const entry_id_param_sfo: u32 = 0x1000;
 
-/// sce_sys files whose entry rows carry no name-table offset; the id is the name.
+/// Entry id to `sce_sys` name, from the shadPS4Plus table. Entries outside it are written as
+/// their decimal id by the extractor.
 pub fn entryNameById(id: u32) ?[]const u8 {
-    return switch (id) {
-        0x400 => "license.dat",
-        0x401 => "license.info",
-        0x402 => "nptitle.dat",
-        0x403 => "npbind.dat",
-        0x404 => "selfinfo.dat",
-        0x406 => "imageinfo.dat",
-        0x407 => "target-deltainfo.dat",
-        0x408 => "origin-deltainfo.dat",
-        0x409 => "psreserved.dat",
-        else => null,
-    };
+    return pkg_names.name(id);
 }
 
 pub const content_flag_delta_patch: u32 = 0x41000000;
