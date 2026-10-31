@@ -32,7 +32,8 @@ jobs:
       - name: Check formatting
         run: zig build check
       - name: Build
-        run: zig build --release=safe
+        # baseline CPU: a native build crashes with SIGILL on older machines.
+        run: zig build --release=safe -Dcpu=baseline
       - name: Test
         run: zig build test
       # A downloaded zip must explain itself: binaries alone do not name the licence or the tool.
